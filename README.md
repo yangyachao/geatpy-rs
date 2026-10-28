@@ -36,12 +36,32 @@ The High-Performance Genetic and Evolutionary Algorithm Toolbox for Python, Powe
 | 特性维度 | 原官方版本 (Geatpy) | 本版本 (Geatpy Rust Core Edition) |
 | :--- | :--- | :--- |
 | **底层核心实现** | 编译好的二进制扩展，内核源码未公开 | **纯 Rust 原生实现** (`crates/geatpy_core`)，源码公开 |
-| **Python 版本支持** | 仅支持 Python 3.5 ~ 3.10 | **Python 3.8 ~ 3.15 全覆盖支持** |
-| **ABI 兼容性** | 每个 Python 小版本单独构建 | **PyO3 `abi3` 单一构建兼容所有 Python 3.8+ 版本** |
+| **Python 版本支持** | 仅支持 Python 3.5 ~ 3.10 | **Python 3.8 ~ 3.15 全覆盖支持**，另有 free-threaded（无 GIL）Python 3.14t 的 Wheel |
+| **ABI 兼容性** | 每个 Python 小版本单独构建 | **PyO3 `abi3` 单一构建兼容所有 Python 3.8+ 版本**（free-threaded 版本没有稳定 ABI，单独构建） |
 | **跨平台预编译** | Windows x86/x64、Linux x86_64、macOS（Apple Silicon 仅 Python 3.8 ~ 3.10），无 Linux ARM64 | **全平台官方预编译 Wheel (Linux x86_64/ARM64, macOS Universal2, Windows x64)** |
 | **代码与内存安全** | 边界输入可能触发段错误，导致 Python 进程退出 | **安全 Rust（唯一的 `unsafe` 是确认 CPU 支持 FMA 后调用 FMA 指令版本的点积）；空、反向、超大等边界输入抛出 Python 异常而非段错误** |
-| **多核并行与性能** | C OpenMP 并行 | 单线程实现（`Parallel` 参数为兼容保留，暂不生效）；36 个经典用例耗时为原版的 0.05~0.73 倍 |
+| **多核并行与性能** | C OpenMP 并行 | 单线程实现（`Parallel` 参数为兼容保留，暂不生效）；36 个经典用例耗时为原版的 0.05~0.73 倍；free-threaded Python 3.14t 上可以用线程同时运行多个模板（见常见问题） |
 | **API 兼容度** | 原版基准 | **沿用原有 Python API、数据结构与 42 个算法模板；内核行为已与官方 2.7.0 二进制逐项对照验证（见下文）** |
+
+### 大规模问题（十万变量）
+
+每代耗时与进程峰值内存（Apple M2 Pro；目标函数为 numpy 向量化的 Sphere、ZDT1 与 0-1 背包，前者几乎不占时间；
+单目标 20 代、NSGA2 10 代取平均，3 次运行的中位数；脚本 `scripts/parity/large_scale.py`）：
+
+| 模板与问题 | 官方 2.7.0 | geatpy-rs 2.7.5 | 当前版本 |
+| :--- | :--- | :--- | :--- |
+| DE/rand/1/bin，Sphere，50 个体 | 87.4 ms，1028 MB | 43.4 ms，825 MB | **29.7 ms，824 MB** |
+| DE/best/1/L，Sphere，50 个体 | 70.6 ms，1027 MB | 37.6 ms，825 MB | **23.6 ms，824 MB** |
+| SEGA，实数编码，Sphere，50 个体 | 69.5 ms，800 MB | 34.4 ms，482 MB | **26.9 ms，482 MB** |
+| EGA，实数编码，Sphere，50 个体 | 61.1 ms，496 MB | 30.3 ms，447 MB | **23.0 ms，445 MB** |
+| SEGA，二进制编码，0-1 背包，50 个体 | 94.8 ms，633 MB | 33.1 ms，408 MB | **25.3 ms，406 MB** |
+| NSGA2，ZDT1，100 个体 | 254 ms，1480 MB | 138 ms，1166 MB | **118 ms，1166 MB** |
+| SEGA，二进制编码，0-1 背包，**50 万变量** | 442 ms，2621 MB | 164 ms，1744 MB | **125 ms，1744 MB** |
+
+同一种子下 2.7.5 与当前版本的结果相同。十万变量时每代只需几十毫秒，速度和内存都不是瓶颈；
+进化算法在这种规模上难以收敛（[#281](https://github.com/geatpy-dev/geatpy/issues/281)、
+[#295](https://github.com/geatpy-dev/geatpy/issues/295)）是算法本身的局限，需要结合问题结构（变量分组、降维、专用算子）
+或改用传统优化方法。
 
 ---
 
@@ -97,6 +117,8 @@ pip install geatpy-rs
 ```
 
 > 💡 **提示**：分发包名为 `geatpy-rs`，在 Python 代码中完全无需改动，继续沿用熟悉的 **`import geatpy as ea`** 即可无缝调用！
+>
+> free-threaded（无 GIL）的 Python 3.14t 上同样 `pip install geatpy-rs`，pip 会自动选择 `cp314t` 的 Wheel。
 
 ### 方式二：从 GitHub Releases 下载预编译 Wheel
 
@@ -313,6 +335,33 @@ de = ea.soea_DE_rand_1_bin_templet(problem, ea.Population('RI', NIND=50), MAXGEN
 de.mutOper.F = 0.7            # 差分进化的缩放因子
 de.recOper.XOVR = 0.9         # 差分进化的交叉概率
 ```
+
+### 能用多线程同时跑多个模板，或并行计算目标函数吗？
+
+在 free-threaded（无 GIL）的 Python 3.14t 上可以：内核不需要 GIL，多个线程可以同时运行各自的模板，
+或在 `evalVars` 里用线程池分块计算目标函数，不必像 `multiprocessing` 那样复制数据。
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+import geatpy as ea
+
+def solve(_):
+    problem = ea.benchmarks.Rastrigrin(30)
+    algorithm = ea.soea_DE_rand_1_bin_templet(problem, ea.Population('RI', NIND=50), MAXGEN=500, logTras=0)
+    res = ea.optimize(algorithm, verbose=False, drawing=0, outputMsg=False, drawLog=False, saveFlag=False)
+    return res['ObjV'][0][0]
+
+with ThreadPoolExecutor(8) as pool:
+    best = list(pool.map(solve, range(8)))  # 同时运行 8 次
+```
+
+实测（Apple M2 Pro，8 个线程）：8 次独立运行时，DE 模板快 4.4 倍，目标函数用纯 Python 写的 SEGA 快 3.8 倍；
+单次运行在 `evalVars` 里分块计算纯 Python 目标函数（400 个体 × 1000 变量），整体快 1.9 倍（其余时间花在算子与
+数据转换上）。普通（有 GIL）的 Python 上线程没有加速。注意：
+
+- 各线程共用 numpy 的全局随机状态，多线程同时运行时 `seed` 不能保证结果可复现；
+- 目标函数里对单个数逐个调用 numpy 函数（如对 Python float 调用 `np.cos`）时，线程之间会相互争用，
+  线程越多反而越慢（8 个线程时只有单线程速度的 0.6 倍）；改用 `math` 模块，或对整个数组调用 numpy。
 
 ### 其它
 
