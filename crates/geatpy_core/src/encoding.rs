@@ -261,10 +261,10 @@ fn decode_view<T: Copy>(
         for (o, &bit) in ones.iter_mut().zip(row) {
             *o = u8::from(one(bit));
         }
-        for (w, genes) in words.iter_mut().zip(ones.chunks_exact(64)) {
+        for (w, genes) in words.iter_mut().zip(ones.as_chunks::<64>().0) {
             let mut lsb_first = 0u64;
-            for (q, eight) in genes.chunks_exact(8).enumerate() {
-                let x = u64::from_le_bytes(eight.try_into().expect("eight bytes"));
+            for (q, eight) in genes.as_chunks::<8>().0.iter().enumerate() {
+                let x = u64::from_le_bytes(*eight);
                 lsb_first |= (x.wrapping_mul(0x0102_0408_1020_4080) >> 56) << (8 * q);
             }
             *w = lsb_first.reverse_bits();
