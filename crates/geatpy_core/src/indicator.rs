@@ -110,27 +110,41 @@ pub fn Spacing<'py>(
             "zero-size array to reduction operation minimum which has no identity",
         ));
     }
-    // np.min over each row of the distance matrix with an infinite diagonal (NaN propagates); a row
-    // of L1 distances is accumulated for all k at once from a column-major copy, so the loop over k
-    // vectorises (every distance is still the sum from 0.0 in order of j)
+    // np.min over each row of the distance matrix with an infinite diagonal (NaN propagates). The
+    // distance is symmetric (|a - b| = |b - a|, summed in the same order of j), so row i computes
+    // only the distances to k > i, for all k at once from a column-major copy (the loops over k
+    // vectorise), and updates the minima of both ends; a NaN distance is tracked apart, since
+    // f64::min skips NaN.
     let pt = crate::utils::transpose(&p);
+    let mut best = vec![f64::INFINITY; n];
+    let mut nan = vec![false; n];
     let mut row = vec![0.0; n];
-    let d: Vec<f64> = (0..n)
-        .map(|i| {
-            row.fill(0.0);
-            for (j, col) in pt.chunks_exact(n).enumerate().take(m) {
-                let x = p[[i, j]];
-                for (o, &y) in row.iter_mut().zip(col) {
-                    *o += (x - y).abs();
-                }
+    for i in 0..n {
+        let r = &mut row[i + 1..];
+        r.fill(0.0);
+        for (j, col) in pt.chunks_exact(n).enumerate().take(m) {
+            let x = p[[i, j]];
+            for (o, &y) in r.iter_mut().zip(&col[i + 1..]) {
+                *o += (x - y).abs();
             }
-            row[i] = f64::INFINITY;
-            if row.iter().any(|x| x.is_nan()) {
-                f64::NAN
-            } else {
-                row.iter().copied().fold(f64::INFINITY, f64::min)
-            }
-        })
+        }
+        let (bi, ni) = r
+            .iter()
+            .fold((best[i], nan[i]), |(b, f), &d| (b.min(d), f | d.is_nan()));
+        (best[i], nan[i]) = (bi, ni);
+        for ((b, f), &d) in best[i + 1..]
+            .iter_mut()
+            .zip(&mut nan[i + 1..])
+            .zip(r.iter())
+        {
+            *b = b.min(d);
+            *f |= d.is_nan();
+        }
+    }
+    let d: Vec<f64> = best
+        .iter()
+        .zip(&nan)
+        .map(|(&b, &f)| if f { f64::NAN } else { b })
         .collect();
     let np = py.import("numpy")?;
     let var = np.call_method1("var", (numpy::ndarray::Array1::from(d).into_pyarray(py),))?;
