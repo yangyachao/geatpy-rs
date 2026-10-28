@@ -59,6 +59,20 @@ geatpy 2.7.0 的 Python 层原样保留，闭源 Cython 内核 `_core` 用 Rust 
 - 原版缺陷（2026-10-28 确认）：`recint`/`reclin` 的 Alpha 为整数、float32 或 bool 数组时，原版按 float64 读取其内存
   （值是垃圾，或随机报“Some elements of Alpha are illegal”）；Rust 转为 float64，bool 数组报该错误。
   `bs2int` 的 FieldD 码长为 0 时除以 2^0 - 1 = 0：x86_64 原版整数除零崩溃，arm64 原版得到下界，Rust 取下界。
+- 原版缺陷（2026-10-28 全量审查确认），Rust 不崩溃、给出合理结果：
+  - 空种群：`rws`/`sus` 返回未初始化的下标（常为 0），Rust 返回全 0；`tour`/`dup` 原版崩溃，Rust 返回空数组
+    （`urs` 与原版一样报 numpy 的 `high <= 0`，`mselecting` 空列表报 `need at least one array to concatenate`）。
+  - `migrate` 用到适应度（Select=1 或 Replacement=2）时，FitnVs 个数少于种群数或某个 FitnV 行数不足，原版读越界；
+    Rust 报 RuntimeError。不用适应度时两边都不读 FitnVs。
+  - 非线性 `ranking`（RM=1）在 N、SP 较大时 x^(N-1) 溢出，原版得 NaN；Rust 改用 1/x 的幂计算，结果正确
+    （最大值 SP、总和 N）；不溢出时公式与结果不变。
+  - FieldDR 上下界反序或含 NaN：截断修复与原版一样先比下界、再比上界（NaN 边界不越过）；`crtrp`/`crtri` 的实数变量
+    与原版一样取 lb + u·|ub - lb|（区间为 inf/NaN 时得 inf/NaN）；`crtip`/`crtri` 的整数变量反序时 Rust 取 ceil(lb)
+    （原版是 lb 以上的随机整数）。
+- Python 层修正的原版缺陷（2026-10-28）：切片 `pop[a:b:c]` 的个体数按实际选中的行计算（原版 `pop[:]` 报 TypeError、
+  `pop[:-1]` 报错、越界的 stop 记成错误的 sizes）；`__setitem__` 在 Phen 为 None 时不再报错；`PsyPopulation.initChrom`
+  重复调用不再累加 Linds；`PsyPopulation.shuffle` 在 Encodings 为 None 时不再报错；`PsyPopulation` 逐个复制 Fields，
+  派生种群不再共享译码矩阵。
 - `refselect` 极点矩阵奇异（多为同一个体同时是几个目标的极点）时，原版 numpy LU 因舍入得到 det≈1e-19≠0，
   解出无意义（甚至为负）的截距；Rust 用除法消元得到精确零主元，退回列最大值（随机 3 目标用例约 1.5%，
   8–12 目标更常见）。其余步骤按原版 arm64 轮子的舍入实现：LU 主元按 OpenBLAS `idamax`（含 NaN 时的行为）、

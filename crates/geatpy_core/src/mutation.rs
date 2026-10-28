@@ -399,6 +399,17 @@ pub fn mutbin<'py>(
             "error in mutbin: The encoding must be 'BG'. (编码方式必须为'BG'。)",
         ));
     }
+    // A 1-D OldChrom is a single chromosome, as in mutpolyn (the original raises IndexError; read
+    // as a column, every gene would be a chromosome of its own with Pm = 1 and flip).
+    let one_d = old_chrom
+        .getattr("ndim")
+        .and_then(|v| v.extract::<usize>())
+        .is_ok_and(|nd| nd == 1);
+    if one_d {
+        let row = old_chrom.call_method1("reshape", (1, -1))?;
+        let out = mutbin(py, encoding, &row, None, pm, None, None, None, None)?;
+        return Ok(out.bind(py).call_method0("ravel")?.unbind());
+    }
     // integer chromosomes (the usual case) are flipped in place without a round trip through f64
     if let Some(mut chrom) = crate::utils::to_i32_array2(old_chrom) {
         let d = chrom.shape()[1];
@@ -1183,7 +1194,24 @@ pub fn mutpp<'py>(
     let (lo, hi) = match field_dr {
         Some(f) if !f.is_none() => {
             let a = crate::utils::to_f64_array2(f)?;
-            (a[[0, 0]].round() as i64, a[[1, 0]].round() as i64)
+            // numpy's messages for FieldDR[0][0] and FieldDR[1][0]
+            let (rows, cols) = a.dim();
+            if rows < 2 || cols == 0 {
+                let (index, size) = if cols == 0 { (0, 0) } else { (rows, rows) };
+                return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                    "index {index} is out of bounds for axis 0 with size {size}"
+                )));
+            }
+            let (lo, hi) = (a[[0, 0]].round() as i64, a[[1, 0]].round() as i64);
+            if (l as i128) > i128::from(hi) - i128::from(lo) + 1 {
+                return Err(err("error in mutpp: Lind must be or smaller than Ub - Lb + 1 for permutation, see the help. (编码长度Lind必须小于Ub - Lb + 1，详见help。)".to_string()));
+            }
+            if chrom.iter().any(|&x| x < lo as f64 || x > hi as f64) {
+                return Err(err(
+                    "error in mutpp: Chromosome error. (染色体不满足排列编码规则。)".to_string(),
+                ));
+            }
+            (lo, hi)
         }
         _ => {
             let mn = chrom.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -1191,7 +1219,11 @@ pub fn mutpp<'py>(
             (mn as i64, mx as i64)
         }
     };
-    let range = (hi - lo + 1).max(1) as usize;
+    // the value -> position table of a row has one slot per value of [lo, hi]
+    let range = usize::try_from(i128::from(hi) - i128::from(lo) + 1)
+        .unwrap_or(usize::MAX)
+        .max(1);
+    crate::utils::check_alloc(&[range], 16, "int64")?;
     let pm = pm_vec(pm, 1, 1.0 / l.max(1) as f64, "mutpp")?[0];
     let times = match mut_n.filter(|m| !m.is_none()) {
         None => 1,

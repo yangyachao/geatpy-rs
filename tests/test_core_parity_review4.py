@@ -489,3 +489,183 @@ def test_bs2int_zero_length_code_gives_the_lower_bound():
     fd = np.array([[0, 3], [2, 0], [9, 7], [0, 0], [0, 0], [1, 1], [1, 1], [1, 1]], float)
     b = np.array([[1, 0, 1], [0, 1, 1]], dtype=np.int32)
     np.testing.assert_array_equal(ea.bs2int(b, fd), [[2, 5], [2, 3]])
+
+
+# --- full review follow-ups (2026-10-28) -------------------------------------------------------
+
+def _fdr(lb, ub, vt=0.0):
+    return np.array([[lb], [ub], [vt]], float)
+
+
+@pytest.mark.parametrize('x, want', [(-3.0, 5.0), (0.0, 5.0), (3.0, 5.0), (10.0, 1.0)])
+def test_truncation_with_reversed_bounds_checks_the_lower_one_first(x, want):
+    assert ea.boundfix('RI', np.array([[x]]), _fdr(5.0, 1.0), 1)[0, 0] == want
+
+
+@pytest.mark.parametrize('lb, ub, x, want', [
+    (nan, 5.0, -3.0, -3.0), (nan, 5.0, 10.0, 5.0), (0.0, nan, -3.0, 0.0), (0.0, nan, 10.0, 10.0),
+])
+def test_truncation_never_crosses_a_nan_bound(lb, ub, x, want):
+    assert ea.boundfix('RI', np.array([[x]]), _fdr(lb, ub), 1)[0, 0] == want
+
+
+@pytest.mark.parametrize('op', [
+    lambda x, f: ea.mutpolyn('RI', x, f, 1), lambda x, f: ea.mutgau('RI', x, f, 1),
+    lambda x, f: ea.mutuni('RI', x, f, 1), lambda x, f: ea.mutbga('RI', x, f, 1),
+    lambda x, f: ea.mutde('RI', x, f, None, 0.5),
+])
+def test_mutations_accept_reversed_bounds(op):
+    x = np.random.RandomState(0).rand(4, 3)
+    np.random.seed(0)
+    assert op(x, np.array([[1.0] * 3, [0.0] * 3, [0] * 3])).shape == (4, 3)
+
+
+def test_random_reals_over_an_unbounded_range():
+    np.random.seed(0)
+    assert np.all(ea.crtrp(2, np.array([[-1e308], [1e308], [0.0]])) == np.inf)
+    assert np.all(ea.crtri(2, _fdr(0.0, np.inf)) == np.inf)
+    assert np.all(np.isnan(ea.crtri(2, _fdr(0.0, nan))))
+
+
+@pytest.mark.parametrize('name', ['crtrp', 'crtri', 'crtip', 'crtpp'])
+@pytest.mark.parametrize('rows', [2, 4])
+def test_creation_wants_a_three_row_field_dr(name, rows):
+    f = np.vstack([np.zeros(2), np.full(2, 5.0), np.ones(2), np.ones(2)])[:rows]
+    with pytest.raises(RuntimeError, match='error in %s: FieldDR must be a matrix with 3 rows' % name):
+        getattr(ea, name)(3, f)
+
+
+@pytest.mark.parametrize('op', [ea.tcheby, ea.pbi])
+@pytest.mark.parametrize('w', [np.ones((4, 2)), np.ones((4, 4)), np.ones((3, 3))])
+def test_decomposition_weights_must_match_objv(op, w):
+    with pytest.raises(RuntimeError, match='error in %s: weights and ObjV disagree' % op.__name__):
+        op(np.ones((4, 3)), w)
+
+
+_POPS = [np.random.RandomState(1).rand(3, 1), np.random.RandomState(2).rand(3, 1)]
+
+
+@pytest.mark.parametrize('fitn_vs', [[_POPS[0]], [np.zeros((3, 0))] * 2, 'not used'])
+def test_migrate_ignores_fitn_vs_unless_fitness_is_used(fitn_vs):
+    np.random.seed(0)
+    assert len(ea.migrate([3, 3], 0.5, 0, 0, 0, fitn_vs)) == 3
+
+
+@pytest.mark.parametrize('select, replacement', [(1, 0), (0, 2)])
+def test_migrate_needs_fitn_vs_with_fitness(select, replacement):
+    with pytest.raises(RuntimeError, match='FitnVs must not be None when Select=1 or Replacement=2'):
+        ea.migrate([3, 3], 0.5, 0, select, replacement, None)
+    with pytest.raises(IndexError, match='index 0 is out of bounds for axis 0 with size 0'):
+        ea.migrate([3, 3], 0.5, 0, select, replacement, [np.zeros((3, 0))] * 2)
+
+
+@rust_only  # the original reads past the end of a missing or short FitnV
+@pytest.mark.parametrize('fitn_vs', [[_POPS[0]], [_POPS[0], _POPS[1][:2]]])
+def test_migrate_refuses_missing_or_short_fitn_vs(fitn_vs):
+    with pytest.raises(RuntimeError, match='FitnVs and PopSizes disagree'):
+        ea.migrate([3, 3], 0.5, 0, 1, 0, fitn_vs)
+
+
+@rust_only  # the original returns uninitialised indices (often zeros)
+def test_roulette_selection_of_an_empty_population_gives_zeros():
+    for op in (ea.rws, ea.sus):
+        np.random.seed(0)
+        np.testing.assert_array_equal(op(np.zeros((0, 1)), 3, None), [0, 0, 0])
+
+
+def test_selection_on_an_empty_population():
+    empty = np.zeros((0, 1))
+    with pytest.raises(ValueError, match='high <= 0'):
+        ea.urs(empty, 3)
+    with pytest.raises(ValueError, match='need at least one array to concatenate'):
+        ea.mselecting('rws', [], 2)
+
+
+@rust_only  # the original crashes
+def test_tournament_and_truncation_of_an_empty_population():
+    assert len(ea.tour(np.zeros((0, 1)), 3)) == 0
+    assert len(ea.dup(np.zeros((0, 1)), 3)) == 0
+
+
+@pytest.mark.parametrize('field, msg, exc', [
+    (np.array([[1, 1, 1], [3, 3, 3]]), 'Chromosome error', RuntimeError),
+    (np.array([[3, 3, 3], [0, 0, 0]]), r'Lind must be or smaller than Ub - Lb \+ 1', RuntimeError),
+    (np.array([[0, 0, 0]]), 'index 1 is out of bounds for axis 0 with size 1', IndexError),
+])
+def test_mutpp_checks_field_dr(field, msg, exc):
+    with pytest.raises(exc, match=msg):
+        ea.mutpp('P', np.array([[0, 1, 2], [2, 0, 1]]), field, 1)
+
+
+def test_crtfld_checks_borders():
+    vt, ranges = np.zeros(2), np.array([[0, 0], [1, 1]])
+    with pytest.raises(IndexError, match='index 1 is out of bounds for axis 0 with size 1'):
+        ea.crtfld('BG', vt, ranges, np.array([[1, 1]]), [2, 2])
+    with pytest.raises(RuntimeError, match='VarTypes and borders disagree'):
+        ea.crtfld('BG', vt, ranges, np.array([[1], [1]]), [2, 2])
+
+
+@pytest.mark.parametrize('op', [ea.xovsp, ea.xovdp, ea.xovud, ea.xovexp, ea.xovsec])
+def test_crossover_of_a_list_with_a_shorter_matrix(op):
+    np.random.seed(0)
+    with pytest.raises(IndexError, match='is out of bounds for axis 0 with size 8'):
+        op([np.zeros((10, 3)), np.zeros((8, 2))], 1.0)
+
+
+@pytest.mark.parametrize('rm', [2, -1, 0.5, 'x', [1]])
+def test_ranking_rm_must_be_0_or_1(rm):
+    with pytest.raises(RuntimeError, match='PM must be in 0 or 1'):
+        ea.ranking(np.arange(10.0)[:, None], None, None, rm, 1.5)
+
+
+@pytest.mark.parametrize('rm', [1.0, True])
+def test_ranking_rm_is_compared_as_a_number(rm):
+    assert ea.ranking(np.arange(10.0)[:, None], None, None, rm, 1.5).shape == (10, 1)
+
+
+@rust_only  # x^(N-1) overflows in the original, which returns NaN
+@pytest.mark.parametrize('n, sp', [(500, 400), (1100, 1000)])
+def test_nonlinear_ranking_of_a_large_population(n, sp):
+    f = ea.ranking(np.arange(float(n))[:, None], None, None, 1, sp)
+    assert np.isclose(f.max(), sp) and np.isclose(f.sum(), n)
+
+
+def test_rps_and_selecting_check_nsel():
+    fit = np.random.RandomState(0).rand(3, 1)
+    for nsel in (0, 5):
+        with pytest.raises(RuntimeError, match='error in rps: Nsel must be an integer bigger than 0'):
+            ea.rps(fit, nsel)
+    with pytest.raises(RuntimeError, match='error in rps: Nsel must be an integer bigger than 0'):
+        ea.selecting('rps', fit, 5)
+    for sel in ('rws', 'tour', 'otos', 'rps'):
+        for nsel in (0, -1):
+            with pytest.raises(RuntimeError, match='error in selecting: NSel must be bigger than 0'):
+                ea.selecting(sel, fit, nsel)
+
+
+@rust_only  # the original raises IndexError on a 1-D chromosome
+def test_mutbin_takes_a_1d_chromosome_as_one_individual():
+    chrom = (np.random.RandomState(3).rand(40) < 0.5).astype(np.int32)
+    np.random.seed(0)
+    one = ea.mutbin('BG', chrom)
+    np.random.seed(0)
+    row = ea.mutbin('BG', chrom[None, :])  # the same draws as a 1 x L matrix (default Pm = 1/L)
+    assert one.shape == (40,)
+    np.testing.assert_array_equal(one, row.ravel())
+
+
+@pytest.mark.parametrize('lens, exc, msg', [
+    ([0, 0], RuntimeError, 'error in crtbp: Lind must be a int number > 0'),
+    ([-3, -2], RuntimeError, 'error in crtbp: Lind must be a int number > 0'),
+    ([nan, 2], ValueError, 'cannot convert float NaN to integer'),
+])
+def test_crtpc_bg_checks_the_code_length(lens, exc, msg):
+    fd = np.array([lens, [0, 0], [1, 1], [0, 0], [0, 0], [1, 1], [1, 1], [0, 0]], float)
+    with pytest.raises(exc, match=msg):
+        ea.crtpc('BG', 3, fd)
+
+
+@pytest.mark.parametrize('dim, num', [(64, 10 ** 6), (2, 3)])
+def test_crtgp_needs_two_points_per_axis(dim, num):
+    with pytest.raises(RuntimeError, match='The NUM is too small to build a grid'):
+        ea.crtgp(dim, num)

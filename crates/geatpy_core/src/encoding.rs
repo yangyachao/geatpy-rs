@@ -58,6 +58,19 @@ pub fn crtfld<'py>(
     let (mut lbin, mut ubin) = match borders {
         Some(b) if !b.is_none() => {
             let b = crate::utils::to_f64_array2(b)?;
+            // numpy's message for borders[0] / borders[1], then geatpy 2.7.0's column check
+            if b.nrows() < 2 {
+                let index = b.nrows().min(1);
+                return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                    "index {index} is out of bounds for axis 0 with size {}",
+                    b.nrows()
+                )));
+            }
+            if b.ncols() != d {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "error in crtfld: VarTypes and borders disagree. (决策变量的个数和边界矩阵borders的列数不相等。)",
+                ));
+            }
             (b.row(0).to_vec(), b.row(1).to_vec())
         }
         _ => (vec![1.0; d], vec![1.0; d]),
@@ -419,7 +432,9 @@ pub fn ri2bs<'py>(
             "error in ri2bs: Phen and FieldD disagree in number of variables.",
         ));
     }
+    // code lengths are at most 31 bits each (checked by parse_field_d)
     let lind: usize = f.lens.iter().sum();
+    crate::utils::check_alloc(&[n, lind], 8, "float64")?;
     let mut chrom = Array2::<f64>::zeros((n, lind));
     for i in 0..n {
         let mut start = 0;
@@ -536,13 +551,14 @@ fn random_bits(py: Python<'_>, nind: usize, lind: usize) -> PyResult<PyObject> {
 }
 
 /// FieldDR bounds (validated); `discrete` honours the varTypes row.
-fn field_dr(field: &Bound<'_, PyAny>) -> PyResult<crate::utils::Bounds> {
+fn field_dr(field: &Bound<'_, PyAny>, name: &str) -> PyResult<crate::utils::Bounds> {
     let f = crate::utils::to_f64_array2(field)?;
     let d = f.shape()[1];
-    if f.shape()[0] < 2 {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "error: FieldDR must be a matrix whose first two rows are the lower and upper bounds.",
-        ));
+    // lower bounds, upper bounds and varTypes, as geatpy 2.7.0 requires
+    if f.shape()[0] != 3 {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "error in {name}: FieldDR must be a matrix with 3 rows. (译码矩阵FieldDR必须是3行的Numpy ndarray类型矩阵。)"
+        )));
     }
     crate::utils::bounds(&f, d, false)
 }
@@ -557,10 +573,14 @@ fn uniform_int<R: Rng>(lb: f64, ub: f64, rng: &mut R) -> f64 {
 }
 
 fn uniform_real<R: Rng>(lb: f64, ub: f64, rng: &mut R) -> f64 {
-    if lb < ub {
+    if lb < ub && (ub - lb).is_finite() {
         rng.gen_range(lb..ub)
-    } else {
+    } else if lb == ub {
         lb
+    } else {
+        // reversed, NaN or overflowing bounds: lb + u |ub - lb| as geatpy 2.7.0 computes it (inf or
+        // NaN when the range is), where rand's gen_range would panic
+        lb + rng.gen::<f64>() * (ub - lb).abs()
     }
 }
 
@@ -574,7 +594,7 @@ pub fn crtip<'py>(
     parallel: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<PyObject> {
     let _ = parallel;
-    let b = self::field_dr(field_dr)?;
+    let b = self::field_dr(field_dr, "crtip")?;
     let d = b.lb.len();
     crate::utils::check_alloc(&[nind, d], 8, "float64")?;
     let mut rng = crate::utils::rng();
@@ -624,7 +644,7 @@ pub fn crtrp<'py>(
     parallel: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<PyObject> {
     let _ = parallel;
-    let b = self::field_dr(field_dr)?;
+    let b = self::field_dr(field_dr, "crtrp")?;
     crate::utils::check_alloc(&[nind, b.lb.len()], 8, "float64")?;
     let mut rng = crate::utils::rng();
     let chrom = Array2::from_shape_fn((nind, b.lb.len()), |(_, j)| {
@@ -643,7 +663,7 @@ pub fn crtri<'py>(
     parallel: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<PyObject> {
     let _ = parallel;
-    let b = self::field_dr(field_dr)?;
+    let b = self::field_dr(field_dr, "crtri")?;
     crate::utils::check_alloc(&[nind, b.lb.len()], 8, "float64")?;
     let mut rng = crate::utils::rng();
     let chrom = Array2::from_shape_fn((nind, b.lb.len()), |(_, j)| {
@@ -666,7 +686,7 @@ pub fn crtpp<'py>(
     parallel: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<PyObject> {
     let _ = parallel;
-    let b = self::field_dr(field_dr)?;
+    let b = self::field_dr(field_dr, "crtpp")?;
     let lind = b.lb.len();
     crate::utils::check_alloc(&[nind, lind], 8, "float64")?;
     if lind == 0 {
@@ -678,6 +698,9 @@ pub fn crtpp<'py>(
         ));
     }
     let (lo, hi) = (b.lb[0].round() as i64, b.ub[0].round() as i64);
+    // the candidate values lo..=hi are listed once
+    let count = usize::try_from(i128::from(hi) - i128::from(lo) + 1).unwrap_or(0);
+    crate::utils::check_alloc(&[count], 8, "float64")?;
     let base: Vec<f64> = (lo..=hi).map(|v| v as f64).collect();
     if base.len() < lind {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
@@ -713,8 +736,25 @@ pub fn crtpc<'py>(
                     "error in crtpc: FieldD must have 8 rows for 'BG'.",
                 ));
             }
-            let lind = f.row(0).iter().sum::<f64>().round() as usize;
-            random_bits(py, nind, lind)
+            // geatpy 2.7.0 passes int(sum of the code lengths) to crtbp, which wants Lind > 0
+            let total = f.row(0).iter().sum::<f64>();
+            if total.is_nan() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "cannot convert float NaN to integer",
+                ));
+            }
+            if total.is_infinite() {
+                return Err(pyo3::exceptions::PyOverflowError::new_err(
+                    "cannot convert float infinity to integer",
+                ));
+            }
+            let lind = total.round();
+            if lind < 1.0 {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "error in crtbp: Lind must be a int number > 0. (染色体长度Lind必须是大于0的int类型数。)",
+                ));
+            }
+            random_bits(py, nind, lind as usize)
         }
         "RI" => crtri(py, nind, field, parallel),
         "P" => crtpp(py, nind, field, parallel),
@@ -725,12 +765,20 @@ pub fn crtpc<'py>(
     }
 }
 
+/// C(n, k), saturating at usize::MAX (the running product C(n-k+i, i) stays exact while it fits).
 fn n_choose_k(n: usize, k: usize) -> usize {
     if k > n {
         return 0;
     }
     let k = k.min(n - k);
-    (1..=k).fold(1usize, |acc, i| acc * (n - k + i) / i)
+    let mut acc: u128 = 1;
+    for i in 1..=k {
+        match acc.checked_mul((n - k + i) as u128) {
+            Some(v) if v / (i as u128) <= usize::MAX as u128 => acc = v / i as u128,
+            _ => return usize::MAX,
+        }
+    }
+    acc as usize
 }
 
 /// All compositions of `h` into `m` non-negative parts, divided by h (Das & Dennis lattice).
@@ -777,7 +825,8 @@ pub fn crtup<'py>(
     }
     if dim == 1 {
         // A single objective: NUM (or Div + 1) evenly spaced points on [0, 1], as in geatpy 2.7.0.
-        let count = num.unwrap_or_else(|| div.unwrap() + 1);
+        let count = num.unwrap_or_else(|| div.unwrap().saturating_add(1));
+        crate::utils::check_alloc(&[count], 8, "float64")?;
         let pts: Vec<f64> = (0..count)
             .map(|i| {
                 if count > 1 {
@@ -798,8 +847,15 @@ pub fn crtup<'py>(
         }
     }
     let mut pts: Vec<Vec<f64>> = match (num, div) {
-        (None, Some(h)) => simplex_lattice(dim, h),
+        (None, Some(h)) => {
+            // the lattice has C(H + M - 1, M - 1) points
+            let count = n_choose_k(h.saturating_add(dim - 1), dim - 1);
+            crate::utils::check_alloc(&[count, dim], 8, "float64")?;
+            simplex_lattice(dim, h)
+        }
         (Some(n), None) => {
+            // at most NUM points
+            crate::utils::check_alloc(&[n, dim], 8, "float64")?;
             let mut h1 = 1;
             while n_choose_k(h1 + dim, dim - 1) <= n {
                 h1 += 1;
@@ -846,19 +902,27 @@ pub fn crtgp<'py>(
             "error in crtgp: Dim must be positive.",
         ));
     }
+    // k^Dim <= NUM, without overflowing (k = 2 and Dim = 64 already exceeds usize)
+    let fits = |k: usize| {
+        u32::try_from(dim)
+            .ok()
+            .and_then(|d| k.checked_pow(d))
+            .is_some_and(|v| v <= num)
+    };
     let mut k = (num as f64).powf(1.0 / dim as f64).floor() as usize;
-    while (k + 1).pow(dim as u32) <= num {
+    while fits(k + 1) {
         k += 1;
     }
-    while k > 0 && k.pow(dim as u32) > num {
+    while k > 0 && !fits(k) {
         k -= 1;
     }
     if k < 2 {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "error in crtgp: NUM is too small to place at least two grid points on every axis. (NUM过小，每一维至少需要2个网格点。)",
+            "error in crtgp: The NUM is too small to build a grid. (期望得到的点集大小NUM太小以至于无法生成一个完整的网格点集。)",
         ));
     }
     let total = k.pow(dim as u32);
+    crate::utils::check_alloc(&[total, dim], 8, "float64")?;
     let mut arr = Array2::<f64>::zeros((total, dim));
     // Same order as np.meshgrid(*axes) (indexing='xy') flattened: axes ordered (1, 0, 2, 3, ...),
     // the last one varying fastest.

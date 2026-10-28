@@ -94,6 +94,9 @@ trait Gene: Copy + PartialEq + PartialOrd + Default {
     /// The gene as an integer, or None when it is not a whole number.
     fn whole(self) -> Option<i64>;
 
+    /// The gene as a float, for the NaN-last total order.
+    fn as_f64(self) -> f64;
+
     /// The smallest and largest gene as integers (None when one is not a whole number); i64::MAX
     /// and i64::MIN for no genes.
     fn whole_range(genes: &[Self]) -> Option<(i64, i64)> {
@@ -108,12 +111,20 @@ trait Gene: Copy + PartialEq + PartialOrd + Default {
 }
 
 impl Gene for f64 {
+    fn as_f64(self) -> f64 {
+        self
+    }
+
     fn whole(self) -> Option<i64> {
         (self.is_finite() && self.fract() == 0.0 && self.abs() < 9e15).then_some(self as i64)
     }
 }
 
 impl Gene for i32 {
+    fn as_f64(self) -> f64 {
+        f64::from(self)
+    }
+
     fn whole(self) -> Option<i64> {
         Some(self as i64)
     }
@@ -175,7 +186,7 @@ fn check_permutation<T: Gene>(chrom: &Array2<T>, name: &str) -> PyResult<()> {
             }
         } else {
             let mut v = row.to_vec();
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            v.sort_by(|a, b| crate::utils::cmp_nan_last(a.as_f64(), b.as_f64()));
             if v.windows(2).any(|w| w[0] == w[1]) {
                 return Err(err());
             }
@@ -498,6 +509,14 @@ fn copy_crossover<'py>(
         for (c, (m, as_int)) in mats.iter().enumerate() {
             let mut new = Array2::<f64>::zeros((src.len(), m.shape()[1]));
             for (r, s) in src.iter().enumerate() {
+                // rows are paired by the first matrix; a shorter one fails as numpy indexing does
+                if s[c] >= m.nrows() {
+                    return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                        "index {} is out of bounds for axis 0 with size {}",
+                        s[c],
+                        m.nrows()
+                    )));
+                }
                 new.row_mut(r).assign(&m.row(s[c]));
             }
             out.append(chrom_out(py, new, *as_int)?)?;

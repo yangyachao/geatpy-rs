@@ -369,15 +369,6 @@ pub fn check_prob(p: f64, op: &str, msg: &str) -> PyResult<f64> {
     Ok(p)
 }
 
-/// Pm in [0, 1], with geatpy 2.7.0's message.
-pub fn check_pm(p: f64, op: &str) -> PyResult<f64> {
-    check_prob(
-        p,
-        op,
-        "Pm must be in [0, 1]. (变异概率Pm必须在[0, 1]之间。)",
-    )
-}
-
 /// Output of an 'RI' operator: like geatpy 2.7.0, an int32 matrix when every variable is an integer
 /// (varTypes all 1), a float64 matrix otherwise.
 pub fn ri_out(py: Python<'_>, chrom: Array2<f64>, discrete: &[bool]) -> PyResult<PyObject> {
@@ -538,7 +529,17 @@ pub fn fix_value<R: rand::Rng>(
         return lb;
     }
     match fix_type {
-        1 => x.clamp(lb, ub),
+        // lower bound first, as geatpy 2.7.0; equals clamp when lb <= ub, and unlike clamp neither
+        // panics nor returns NaN for reversed or NaN bounds (a NaN bound is never crossed)
+        1 => {
+            if x < lb {
+                lb
+            } else if x > ub {
+                ub
+            } else {
+                x
+            }
+        }
         2 => {
             if x > ub {
                 lb + (x - ub) % span
