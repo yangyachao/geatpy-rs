@@ -3,7 +3,7 @@
 """import all libs of geatpy."""
 
 __author__ = "yangyachao, Geatpy Team"
-__version__ = "2.8.0b1"
+__version__ = "2.8.0b2"
 
 # import classes and mathods
 from geatpy.Algorithm import Algorithm  # isort:skip

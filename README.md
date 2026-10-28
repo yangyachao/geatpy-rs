@@ -126,7 +126,7 @@ pip install geatpy-rs
 >
 > free-threaded（无 GIL）的 Python 3.14t 上同样 `pip install geatpy-rs`，pip 会自动选择 `cp314t` 的 Wheel。
 
-> 🧪 **预览版**：2.8.0b1 是多线程预览版（不含 GPU），`pip install` 默认仍安装 2.7.5 稳定版，试用请加 `--pre`：
+> 🧪 **预览版**：2.8.0b2 是多线程预览版（不含 GPU），`pip install` 默认仍安装 2.7.6 稳定版，试用请加 `--pre`：
 > `pip install --pre geatpy-rs`。
 
 ### 方式二：从 GitHub Releases 下载预编译 Wheel
@@ -135,16 +135,16 @@ pip install geatpy-rs
 
 ```bash
 # Linux (x86_64)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.5/geatpy_rs-2.7.5-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 
 # Linux (ARM64 / aarch64)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.5/geatpy_rs-2.7.5-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
 
 # macOS (Universal2 - 支持 Apple Silicon M1/M2/M3/M4 以及 Intel Mac)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.5/geatpy_rs-2.7.5-cp38-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl
+pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl
 
 # Windows (x86_64)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.5/geatpy_rs-2.7.5-cp38-abi3-win_amd64.whl
+pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-win_amd64.whl
 ```
 
 ### 方式三：从源码本地构建
