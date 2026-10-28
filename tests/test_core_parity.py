@@ -136,7 +136,11 @@ def test_template_quality(key):
     if golden['error']:
         pytest.skip('original core fails: ' + golden['error'])
     name, mk, enc, nind, gen = _RUNS[key]
-    vals = [pc.run_template(ea, name, mk, enc, nind, gen) for _ in range(len(golden['values']))]
+    # fixed seeds, so the check does not fail at random (the median of a few runs is noisy)
+    vals = []
+    for r in range(len(golden['values'])):
+        np.random.seed(1000 + r)
+        vals.append(pc.run_template(ea, name, mk, enc, nind, gen))
     ref, got = float(np.median(golden['values'])), float(np.median(vals))
     if name.startswith('moea'):
         limit = 2.0 * ref + 0.01          # IGD
