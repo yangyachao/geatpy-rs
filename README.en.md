@@ -149,16 +149,16 @@ Download the wheel for your platform from the [Releases page](https://github.com
 
 ```bash
 # Linux (x86_64)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.5/geatpy_rs-2.7.5-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 
 # Linux (ARM64 / aarch64)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.5/geatpy_rs-2.7.5-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
 
 # macOS (Universal2: Apple Silicon M1/M2/M3/M4 and Intel)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.5/geatpy_rs-2.7.5-cp38-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl
+pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl
 
 # Windows (x86_64)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.5/geatpy_rs-2.7.5-cp38-abi3-win_amd64.whl
+pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-win_amd64.whl
 ```
 
 ### Option 3: build from source

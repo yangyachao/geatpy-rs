@@ -70,8 +70,8 @@ pip install .
 ```
 
 构建完成后产物位于 `dist/` 目录下：
-- `dist/geatpy_rs-2.7.5-cp38-abi3-<platform>_<arch>.whl`：针对该操作系统的二进制 Wheel。
-- `dist/geatpy_rs-2.7.5.tar.gz`：通用的源码分发包 (sdist)。
+- `dist/geatpy_rs-2.7.6-cp38-abi3-<platform>_<arch>.whl`：针对该操作系统的二进制 Wheel。
+- `dist/geatpy_rs-2.7.6.tar.gz`：通用的源码分发包 (sdist)。
 
 > **特性说明**：由于开启了 Python **abi3-py38** 特性，编译出的单个二进制 Wheel 可直接在 **Python 3.8、3.9、3.10、3.11、3.12、3.13、3.14、3.15** 下直接加载运行，无需针对每个 Python 小版本分别编译。
 >
@@ -93,7 +93,7 @@ twine upload dist/*
    - Rust fmt / clippy（含测试代码）与单元测试（Ubuntu x86_64、macOS arm64），并在 Ubuntu、macOS、Windows 上测试 Python 3.8 至 3.15。
    - 平时推送不运行，只在发布时由发布流水线调用；也可以在 Actions 页面手动运行（Run workflow）。
 2. **多平台发布流水线 ([`.github/workflows/release.yml`](.github/workflows/release.yml))**：
-   - 当向仓库推送标签（如 `git push origin v2.7.5`）时自动启动，先运行上面的 CI，全部通过后才发布。
+   - 当向仓库推送标签（如 `git push origin v2.7.6`）时自动启动，先运行上面的 CI，全部通过后才发布。
    - 自动化跨平台编译构建：
      - `manylinux` x86_64
      - `manylinux` aarch64 (ARM64)
