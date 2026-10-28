@@ -1,8 +1,8 @@
 # geatpy-rs 协作约定
 
 geatpy 2.7.0 的 Python 层原样保留，闭源 Cython 内核 `_core` 用 Rust 重写（`crates/geatpy_core`，PyO3 abi3，
-单一 `cp38-abi3` 轮子）。目标是**与官方 2.7.0 二进制行为一致**：同样的输入得到同样的输出、同样的返回类型、
-同样的报错；随机算子则分布一致。PyPI 包名 `geatpy-rs`，导入名仍是 `geatpy`。
+单一 `cp38-abi3` 轮子；free-threaded 3.14t 没有稳定 ABI，另出 `cp314t` 轮子）。目标是**与官方 2.7.0 二进制行为一致**：
+同样的输入得到同样的输出、同样的返回类型、同样的报错；随机算子则分布一致。PyPI 包名 `geatpy-rs`，导入名仍是 `geatpy`。
 
 ## 目录
 
@@ -107,6 +107,9 @@ geatpy 2.7.0 的 Python 层原样保留，闭源 Cython 内核 `_core` 用 Rust 
 - 浮点排序用全序比较（`crate::utils::cmp_nan_last`，即 numpy 的 NaN 置后顺序），不要用 `partial_cmp(..).unwrap()` 或
   `unwrap_or(Equal)`：后者遇到 NaN 不是全序，Rust 1.81 起排序会 panic。目标值含 NaN 时 `ndsort*` 调用 numpy 的
   `np.unique`/`np.argsort`，与原版一样由 numpy 的快速排序决定相等行的先后。
+- PyO3 / rust-numpy 停在 0.29：这是最后一个提供 `abi3-py38` 的版本（0.30 起最低 3.9），升级要同时放弃 Python 3.8。
+  模块声明 `gil_used = false`，free-threaded 下内核函数可被多个线程同时调用：不要引入依赖 GIL 互斥的全局可变状态
+  （需要时用 `Mutex`/`OnceLock` 或 PyO3 的 `PyOnceLock`）。
 - 随机数一律用 `crate::utils::rng()`（每次调用从 numpy 全局 RandomState 取种子，`np.random.seed` 才能复现），不要用 `thread_rng`。
 - 性能优化只改实现、不改算法：每个基因/个体的概率与原版相同（例如 `mutbin` 用几何分布跳跃抽取变异位），改后用 fuzz 与
   `scripts/parity/classic.py` 确认分布与解质量不变。

@@ -68,7 +68,7 @@ pub fn mutpolyn<'py>(
     fix_type: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
     params7: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = (parallel, params7);
     require_ri(encoding, "mutpolyn")?;
     // A 1-D OldChrom is a single chromosome (the original segfaults on it).
@@ -136,7 +136,7 @@ pub fn mutgau<'py>(
     middle: Opt<'_, 'py>,
     fix_type: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     require_ri(encoding, "mutgau")?;
     let mut chrom = crate::utils::to_f64_array2(old_chrom)?;
@@ -231,7 +231,7 @@ pub fn mutbga<'py>(
     gradient: Opt<'_, 'py>,
     fix_type: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     require_ri(encoding, "mutbga")?;
     let mut chrom = crate::utils::to_f64_array2(old_chrom)?;
@@ -312,7 +312,7 @@ pub fn mutuni<'py>(
     middle: Opt<'_, 'py>,
     fix_type: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     require_ri(encoding, "mutuni")?;
     let mut chrom = crate::utils::to_f64_array2(old_chrom)?;
@@ -392,7 +392,7 @@ pub fn mutbin<'py>(
     params5: Opt<'_, 'py>,
     params6: Opt<'_, 'py>,
     params7: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = (params2, parallel, params5, params6, params7);
     if encoding != "BG" {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
@@ -488,7 +488,7 @@ pub fn mutde<'py>(
     fix_type: Opt<'_, 'py>,
     mask_n: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     require_ri(encoding, "mutde")?;
     let chrom = crate::utils::to_f64_array2(old_chrom)?;
@@ -505,7 +505,7 @@ pub fn mutde<'py>(
                 "an integer is required",
             ));
         }
-        if let Ok(arr) = m.downcast::<numpy::PyUntypedArray>() {
+        if let Ok(arr) = m.cast::<numpy::PyUntypedArray>() {
             use numpy::{PyArrayDescrMethods, PyUntypedArrayMethods};
             if arr.ndim() != 2 {
                 return Err(err("error in mutde: The dimension of Mask_N must be 2 when it is a Numpy ndarray. (当传入参数Mask_N是Numpy ndarray类型时，它必须是2维的。)".to_string()));
@@ -541,7 +541,7 @@ pub fn mutde<'py>(
     const SEQ: [&str; 5] = ["基向量", "差分向量", "差分向量", "差分向量", "差分向量"];
     let mut xrs: Vec<Xr> = Vec::new();
     if let Some(list) = xr_list.filter(|l| !l.is_none()) {
-        let list = list.downcast::<pyo3::types::PyList>().map_err(|_| {
+        let list = list.cast::<pyo3::types::PyList>().map_err(|_| {
             err("error in mutde: XrList must be a list. (XrList必须是list类型。)".to_string())
         })?;
         if list.len() > 5 {
@@ -553,7 +553,7 @@ pub fn mutde<'py>(
                 continue;
             }
             let ndim = item
-                .downcast::<numpy::PyUntypedArray>()
+                .cast::<numpy::PyUntypedArray>()
                 .map(|a| {
                     use numpy::PyUntypedArrayMethods;
                     a.ndim()
@@ -827,7 +827,7 @@ fn parse_len(obj: Opt, default: usize, op: &str, arg: &str, min: i64) -> PyResul
         }
         return Ok((v as usize, false));
     }
-    if let Ok(list) = o.downcast::<pyo3::types::PyList>() {
+    if let Ok(list) = o.cast::<pyo3::types::PyList>() {
         let k = if list.len() == 1 {
             int_value(&list.get_item(0)?)
         } else {
@@ -852,7 +852,7 @@ fn short_permutation<'py>(
     encoding: &str,
     old: &Bound<'py, PyAny>,
     l: usize,
-) -> PyResult<Option<PyObject>> {
+) -> PyResult<Option<Py<PyAny>>> {
     if encoding == "P" && l < 2 {
         let np = old.py().import("numpy")?;
         return Ok(Some(np.call_method1("array", (old,))?.unbind()));
@@ -896,7 +896,7 @@ fn order_out(
     chrom: Array2<f64>,
     discrete: Option<Vec<bool>>,
     as_int: bool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     match discrete {
         Some(d) => crate::utils::ri_out(py, chrom, &d),
         None => chrom_out(py, chrom, as_int),
@@ -927,7 +927,7 @@ pub fn mutinv<'py>(
     parallel: Opt<'_, 'py>,
     params6: Opt<'_, 'py>,
     params7: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = (parallel, params6, params7);
     check_order_encoding(encoding, "mutinv")?;
     let as_int = is_integer_like(old_chrom);
@@ -1004,7 +1004,7 @@ pub fn mutmove<'py>(
     pr: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
     params7: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = (parallel, params7);
     check_order_encoding(encoding, "mutmove")?;
     let as_int = is_integer_like(old_chrom);
@@ -1103,7 +1103,7 @@ pub fn mutswap<'py>(
     params5: Opt<'_, 'py>,
     params6: Opt<'_, 'py>,
     params7: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = (parallel, params5, params6, params7);
     check_order_encoding(encoding, "mutswap")?;
     let as_int = is_integer_like(old_chrom);
@@ -1172,7 +1172,7 @@ pub fn mutpp<'py>(
     parallel: Opt<'_, 'py>,
     params6: Opt<'_, 'py>,
     params7: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = (parallel, params6, params7);
     if encoding != "P" {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
@@ -1281,7 +1281,7 @@ pub fn mutate<'py>(
     mut_f: &str,
     args: &Bound<'py, PyTuple>,
     kwargs: Option<&Bound<'py, PyDict>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let name = mut_f.to_lowercase();
     let allowed = [
         "mutpolyn", "mutgau", "mutbga", "mutuni", "mutbin", "mutde", "mutinv", "mutmove",

@@ -17,7 +17,7 @@ use mutation::*;
 use recombination::*;
 use selection::*;
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 fn _geatpy_core(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // 1. Encoding & Population Generation
     m.add_function(wrap_pyfunction!(crtfld, m)?)?;

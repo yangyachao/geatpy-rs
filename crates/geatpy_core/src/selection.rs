@@ -410,7 +410,7 @@ pub fn otos<'py>(
     nsel: usize,
     params2: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = (params2, parallel);
     crate::utils::check_alloc(&[nsel], 8, "int64")?;
     let fit = fitness_or_n(fitn_v_n)?;
@@ -433,7 +433,7 @@ pub fn selecting<'py>(
     nsel: Opt<'_, 'py>,
     params2: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     let fit = fitness_or_n(fitn_v_n)?;
     if let Some(o) = nsel.filter(|o| !o.is_none()) {

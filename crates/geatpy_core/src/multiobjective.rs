@@ -698,7 +698,7 @@ pub fn mergecv<'py>(
     threshold: Option<&Bound<'py, PyAny>>,
     return_count: Option<&Bound<'py, PyAny>>,
     parallel: Option<&Bound<'py, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     let arr = crate::utils::to_f64_array2(cv)?;
     let (n, c) = (arr.shape()[0], arr.shape()[1]);
@@ -1307,7 +1307,7 @@ pub fn refgselect<'py>(
                     g.get_type().name()?
                 )));
             }
-            if let Ok(a) = g.downcast::<numpy::PyUntypedArray>() {
+            if let Ok(a) = g.cast::<numpy::PyUntypedArray>() {
                 use numpy::PyUntypedArrayMethods;
                 if a.ndim() == 0 {
                     return Err(pyo3::exceptions::PyValueError::new_err(
@@ -1469,7 +1469,7 @@ pub fn migrate<'py>(
     replacement: Option<i64>,
     fitn_vs: Option<&Bound<'py, PyAny>>,
     separate: Option<bool>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let p = pop_sizes.len();
     let migr = migr.unwrap_or(0.2);
     let (structure, select, replacement) = (
