@@ -177,6 +177,89 @@ fn hv_exact(mut pts: Vec<Vec<f64>>, refp: &[f64]) -> f64 {
     vol
 }
 
+/// Total order on f64 for the staircase keys (no NaN reaches it).
+#[derive(Clone, Copy, PartialEq)]
+struct Key(f64);
+
+impl Eq for Key {}
+
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Key {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+/// Exact 3-D hypervolume by a sweep along the third objective: the points are inserted in order
+/// of z into the 2-D staircase of the first two objectives, whose dominated area is kept up to
+/// date, so each slab between consecutive z values costs O(log n) instead of a new 2-D sweep.
+fn hv3_sweep(pts: &mut [[f64; 3]], refp: &[f64]) -> f64 {
+    use std::collections::BTreeMap;
+    use std::ops::Bound::{Excluded, Included, Unbounded};
+    pts.sort_by(|a, b| crate::utils::cmp_nan_last(a[2], b[2]));
+    let (rx, ry) = (refp[0], refp[1]);
+    // non-dominated (x, y) so far: x increasing, y decreasing
+    let mut stairs: BTreeMap<Key, f64> = BTreeMap::new();
+    let (mut area, mut vol) = (0.0, 0.0);
+    for (i, p) in pts.iter().enumerate() {
+        let (x, y) = (p[0], p[1]);
+        // the point with the largest x <= x has the smallest y among them
+        let covered = stairs
+            .range(..=Key(x))
+            .next_back()
+            .is_some_and(|(_, &qy)| qy <= y);
+        if !covered {
+            let mut cur_y = stairs.range(..Key(x)).next_back().map_or(ry, |(_, &qy)| qy);
+            let mut cur_x = x;
+            // remove the points p dominates (x' >= x, y' >= y), adding the strips p now covers
+            let dominated: Vec<(Key, f64)> = stairs
+                .range((Included(Key(x)), Unbounded))
+                .take_while(|(_, &qy)| qy >= y)
+                .map(|(&k, &v)| (k, v))
+                .collect();
+            for (k, qy) in &dominated {
+                area += (k.0 - cur_x) * (cur_y - y);
+                cur_x = k.0;
+                cur_y = *qy;
+                stairs.remove(k);
+            }
+            let end = stairs
+                .range((Excluded(Key(x)), Unbounded))
+                .next()
+                .map_or(rx, |(k, _)| k.0);
+            area += (end - cur_x) * (cur_y - y);
+            stairs.insert(Key(x), y);
+        }
+        let upper = pts.get(i + 1).map_or(refp[2], |q| q[2]);
+        vol += area * (upper - p[2]);
+    }
+    vol
+}
+
+/// Exact 4-D hypervolume: slices along the fourth objective, each the 3-D hypervolume of the points
+/// below it (O(n^2 log n) in all; slicing down to two dimensions was O(n^3 log n)).
+fn hv4(mut pts: Vec<Vec<f64>>, refp: &[f64]) -> f64 {
+    pts.retain(|p| p.iter().zip(refp).all(|(a, r)| a < r));
+    pts.sort_by(|a, b| crate::utils::cmp_nan_last(a[3], b[3]));
+    let mut slice: Vec<[f64; 3]> = Vec::with_capacity(pts.len());
+    let mut vol = 0.0;
+    for i in 0..pts.len() {
+        let upper = pts.get(i + 1).map_or(refp[3], |q| q[3]);
+        let depth = upper - pts[i][3];
+        if depth > 0.0 {
+            slice.clear();
+            slice.extend(pts[..=i].iter().map(|p| [p[0], p[1], p[2]]));
+            vol += depth * hv3_sweep(&mut slice, &refp[..3]);
+        }
+    }
+    vol
+}
+
 /// Fraction of `samples` uniform points of the box [min(pts), refp] that some point weakly
 /// dominates, times the box volume. A sample is drawn as m consecutive uniforms (one per objective).
 /// Which point dominates a sample does not matter, so points dominated by another point are dropped
@@ -224,7 +307,8 @@ fn hv_monte_carlo(pts: &[Vec<f64>], refp: &[f64], samples: usize) -> f64 {
 /// Hypervolume of ObjV normalised like geatpy 2.7.0: each objective is mapped by
 /// (x - lo) / (hi - lo) with lo = min(0, min of the ObjV column) and hi = 1.1 * max of the PF
 /// column (PF defaults to ObjV); the reference point is 1 on every axis and points beyond it are
-/// dropped. Exact for M <= 4, Monte Carlo with 100000 samples above (as geatpy 2.7.0).
+/// dropped. Exact for M <= 4 (M = 4 by 3-D sweeps), Monte Carlo with 100000 samples above (as
+/// geatpy 2.7.0).
 #[pyfunction]
 #[pyo3(signature = (ObjV, PF=None, Parallel=None))]
 #[allow(non_snake_case)]
@@ -278,7 +362,9 @@ pub fn HV(ObjV: &Bound<'_, PyAny>, PF: Opt, Parallel: Opt) -> PyResult<f64> {
         return Ok(0.0);
     }
     let refp = vec![1.0; m];
-    Ok(if m <= 4 {
+    Ok(if m == 4 {
+        hv4(inside, &refp)
+    } else if m < 4 {
         hv_exact(inside, &refp)
     } else {
         // geatpy 2.7.0 draws 100000 samples
