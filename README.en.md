@@ -3,8 +3,8 @@ The High-Performance Genetic and Evolutionary Algorithm Toolbox for Python, Powe
 
 **English** | [中文](README.md)
 
-[![Release](https://github.com/yangyachao/geatpy/actions/workflows/release.yml/badge.svg)](https://github.com/yangyachao/geatpy/actions/workflows/release.yml)
-[![Release](https://img.shields.io/github/v/release/yangyachao/geatpy?color=blue&logo=github)](https://github.com/yangyachao/geatpy/releases)
+[![Release](https://github.com/yangyachao/geatpy-rs/actions/workflows/release.yml/badge.svg)](https://github.com/yangyachao/geatpy-rs/actions/workflows/release.yml)
+[![Release](https://img.shields.io/github/v/release/yangyachao/geatpy-rs?color=blue&logo=github)](https://github.com/yangyachao/geatpy-rs/releases)
 [![Python Version](https://img.shields.io/badge/python-3.8_~_3.15-blue.svg?logo=python&logoColor=white)](https://pypi.org/project/geatpy-rs/)
 [![Rust](https://img.shields.io/badge/rust-PyO3_abi3-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-LGPL--3.0-green.svg)](LICENSE)
@@ -145,20 +145,20 @@ pip install geatpy-rs
 
 ### Option 2: prebuilt wheels from GitHub Releases
 
-Download the wheel for your platform from the [Releases page](https://github.com/yangyachao/geatpy/releases), or install it directly:
+Download the wheel for your platform from the [Releases page](https://github.com/yangyachao/geatpy-rs/releases), or install it directly:
 
 ```bash
 # Linux (x86_64)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+pip install https://github.com/yangyachao/geatpy-rs/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 
 # Linux (ARM64 / aarch64)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+pip install https://github.com/yangyachao/geatpy-rs/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
 
 # macOS (Universal2: Apple Silicon M1/M2/M3/M4 and Intel)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl
+pip install https://github.com/yangyachao/geatpy-rs/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl
 
 # Windows (x86_64)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-win_amd64.whl
+pip install https://github.com/yangyachao/geatpy-rs/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-win_amd64.whl
 ```
 
 ### Option 3: build from source
@@ -166,8 +166,8 @@ pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy
 After cloning, only a Rust toolchain and `maturin` are needed:
 
 ```bash
-git clone https://github.com/yangyachao/geatpy.git
-cd geatpy
+git clone https://github.com/yangyachao/geatpy-rs.git
+cd geatpy-rs
 
 # cross-platform build script
 python scripts/build.py --install
@@ -445,7 +445,7 @@ Like the original, this project is licensed under the **[GNU Lesser General Publ
 
 - **Maintainer of the Rust Core Edition**: yangyachao ([www.yangyachao.com](https://www.yangyachao.com))
 - **Email**: [yangyachao@live.cn](mailto:yangyachao@live.cn)
-- **Repository**: [https://github.com/yangyachao/geatpy](https://github.com/yangyachao/geatpy)
+- **Repository**: [https://github.com/yangyachao/geatpy-rs](https://github.com/yangyachao/geatpy-rs)
 
 ### Copyright Notice
 - **Rust core re-implementation and distribution**: Copyright (C) 2026 yangyachao.

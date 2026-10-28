@@ -130,7 +130,7 @@ jobs:
     needs: [ci, build-wheels, build-wheels-free-threaded, build-sdist]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
-    # PyPI trusted publisher: owner yangyachao, repository geatpy, workflow release.yml, environment pypi
+    # PyPI trusted publisher: owner yangyachao, repository geatpy-rs, workflow release.yml, environment pypi
     environment:
       name: pypi
       url: https://pypi.org/project/geatpy-rs/
@@ -164,8 +164,10 @@ jobs:
           prerelease: ${{ steps.tag.outputs.prerelease }}
           make_latest: ${{ steps.tag.outputs.prerelease == 'true' && 'false' || 'true' }}
 
+      # A failed upload (e.g. a trusted-publisher mismatch) must fail the run; re-running a release
+      # skips the files already on PyPI.
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        continue-on-error: true
         with:
           packages-dir: dist/
+          skip-existing: true

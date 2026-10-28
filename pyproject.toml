@@ -41,8 +41,8 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://www.yangyachao.com"
-Repository = "https://github.com/yangyachao/geatpy"
-Issues = "https://github.com/yangyachao/geatpy/issues"
+Repository = "https://github.com/yangyachao/geatpy-rs"
+Issues = "https://github.com/yangyachao/geatpy-rs/issues"
 
 [tool.maturin]
 manifest-path = "crates/geatpy_core/Cargo.toml"

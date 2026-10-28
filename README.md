@@ -3,8 +3,8 @@ The High-Performance Genetic and Evolutionary Algorithm Toolbox for Python, Powe
 
 [English](README.en.md) | **中文**
 
-[![Release](https://github.com/yangyachao/geatpy/actions/workflows/release.yml/badge.svg)](https://github.com/yangyachao/geatpy/actions/workflows/release.yml)
-[![Release](https://img.shields.io/github/v/release/yangyachao/geatpy?color=blue&logo=github)](https://github.com/yangyachao/geatpy/releases)
+[![Release](https://github.com/yangyachao/geatpy-rs/actions/workflows/release.yml/badge.svg)](https://github.com/yangyachao/geatpy-rs/actions/workflows/release.yml)
+[![Release](https://img.shields.io/github/v/release/yangyachao/geatpy-rs?color=blue&logo=github)](https://github.com/yangyachao/geatpy-rs/releases)
 [![Python Version](https://img.shields.io/badge/python-3.8_~_3.15-blue.svg?logo=python&logoColor=white)](https://pypi.org/project/geatpy-rs/)
 [![Rust](https://img.shields.io/badge/rust-PyO3_abi3-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-LGPL--3.0-green.svg)](LICENSE)
@@ -122,20 +122,20 @@ pip install geatpy-rs
 
 ### 方式二：从 GitHub Releases 下载预编译 Wheel
 
-前往 [Releases 页面](https://github.com/yangyachao/geatpy/releases) 下载对应系统的 Wheel 文件，或通过链接一键安装：
+前往 [Releases 页面](https://github.com/yangyachao/geatpy-rs/releases) 下载对应系统的 Wheel 文件，或通过链接一键安装：
 
 ```bash
 # Linux (x86_64)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+pip install https://github.com/yangyachao/geatpy-rs/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 
 # Linux (ARM64 / aarch64)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+pip install https://github.com/yangyachao/geatpy-rs/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
 
 # macOS (Universal2 - 支持 Apple Silicon M1/M2/M3/M4 以及 Intel Mac)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl
+pip install https://github.com/yangyachao/geatpy-rs/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl
 
 # Windows (x86_64)
-pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-win_amd64.whl
+pip install https://github.com/yangyachao/geatpy-rs/releases/download/v2.7.6/geatpy_rs-2.7.6-cp38-abi3-win_amd64.whl
 ```
 
 ### 方式三：从源码本地构建
@@ -143,8 +143,8 @@ pip install https://github.com/yangyachao/geatpy/releases/download/v2.7.6/geatpy
 克隆仓库后，仅需 Rust 工具链与 `maturin` 即可一键构建安装：
 
 ```bash
-git clone https://github.com/yangyachao/geatpy.git
-cd geatpy
+git clone https://github.com/yangyachao/geatpy-rs.git
+cd geatpy-rs
 
 # 使用内置跨平台构建脚本
 python scripts/build.py --install
@@ -409,7 +409,7 @@ Rust 内核位于 `crates/geatpy_core/`，导出 74 个算子，名称与原版�
 
 - **Rust Core 发行版维护者**: yangyachao ([www.yangyachao.com](https://www.yangyachao.com))
 - **联系邮箱**: [yangyachao@live.cn](mailto:yangyachao@live.cn)
-- **代码仓库**: [https://github.com/yangyachao/geatpy](https://github.com/yangyachao/geatpy)
+- **代码仓库**: [https://github.com/yangyachao/geatpy-rs](https://github.com/yangyachao/geatpy-rs)
 
 ### 版权声明 (Copyright Notice)
 - **Rust Core 重构实现与打包分发版权**: Copyright (C) 2026 yangyachao.
