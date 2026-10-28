@@ -94,13 +94,17 @@ def _parallel_cases():
     cv = rs.rand(6000, 2) - 0.8
     lv, cri = ea.ndsortESS(o3[:3000], 1500)
     ref = ea.crtup(3, 1500)[0]
-    yield 'ndsortESS', lambda: ea.ndsortESS(o3)
-    yield 'ndsortESS_need', lambda: ea.ndsortESS(o5, 700)
+    # with three objectives the fronts stay serial (the serial check is as fast), so the sorts
+    # take five and eight
+    s5, s8 = _front(rs, 3000, 5), _front(rs, 2000, 8)
+    yield 'ndsortESS', lambda: ea.ndsortESS(s8)
+    yield 'ndsortESS_need', lambda: ea.ndsortESS(s5, 1400)
     # a large front after maxormins flips the second objective, with a few infeasible rows
-    flipped, few_cv = o3 * [1, -1, 1], rs.rand(6000, 1) - 0.97
-    yield 'ndsortTNS_cv', lambda: ea.ndsortTNS(flipped, 6000, None, few_cv, [1, -1, 1])
-    # a large front with tied coordinates (each value shared by about 32 rows) and duplicate rows
-    yield 'ndsortDED_dup', lambda: ea.ndsortDED(np.round(o3 * 200) / 200)
+    flipped, few_cv = s5 * [1, -1, 1, 1, 1], rs.rand(3000, 1) - 0.97
+    yield 'ndsortTNS_cv', lambda: ea.ndsortTNS(flipped, 3000, None, few_cv, [1, -1, 1, 1, 1])
+    # a large front with tied coordinates (each value shared by about 100 rows) and duplicate rows
+    tied = np.round(s8 * 20) / 20
+    yield 'ndsortDED_dup', lambda: ea.ndsortDED(np.vstack([tied, tied[::5]]))
     yield 'refselect', lambda: ea.refselect(o3[:3000], lv, cri, 1500, ref)
     yield 'refgselect', lambda: ea.refgselect(o3[:3000], ref, 2.0, cv[:3000])
     for metric in ('euclidean', 'cityblock', 'cosine', 'cosine_similarity'):
@@ -156,7 +160,7 @@ def test_set_num_threads_none_restores_the_default():
 
 def _sort_in_child(seed):
     rs = np.random.RandomState(seed)
-    return ea.ndsortESS(_front(rs, 6000, 3))[1]
+    return ea.ndsortESS(_front(rs, 2000, 8))[1]
 
 
 @pytest.mark.filterwarnings('ignore:This process .* is multi-threaded:DeprecationWarning')

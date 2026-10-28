@@ -128,7 +128,7 @@ const FRONT_CHUNK: usize = 1024;
 const FRONT_PAR_MIN_ROWS: usize = 512;
 /// A block goes parallel once the front found so far times the objectives compared reaches this:
 /// a row that joins the front is compared with all of it, so below this a block is cheap anyway.
-const FRONT_PAR_MIN_WORK: usize = 2048;
+const FRONT_PAR_MIN_WORK: usize = 8192;
 
 /// Efficient non-dominated sort, one complete front per pass. `pts` holds objectives 2..M (`w` of
 /// them) of the unique rows sorted lexicographically, `rep` their multiplicities. Returns the level
@@ -160,7 +160,7 @@ fn front_levels(
     };
     // blocks small enough to give every thread a share of a front pass
     let threads = crate::parallel::num_threads().max(1);
-    let chunk = (u / threads.saturating_mul(2)).clamp(64, FRONT_CHUNK);
+    let chunk = (u / threads.saturating_mul(2)).clamp(256, FRONT_CHUNK);
     let mut lv = vec![0usize; u];
     let mut cri_level = 0usize;
     let mut sums = 0usize;
@@ -1090,7 +1090,7 @@ fn matmul_mismatch(mb: usize, m: usize) -> PyErr {
 
 /// Multiply-adds from which `dot_matrix` runs in parallel: in refgselect the association and
 /// selection that follow stay serial, so the product alone has to outweigh the hand-off.
-const DOT_MATRIX_PAR_MIN_WORK: usize = 1 << 20;
+const DOT_MATRIX_PAR_MIN_WORK: usize = 1 << 17;
 
 /// `f` applied to every entry of numpy `a @ b.T` (rows as in `matmul_row`; `a` and `b` have the
 /// same number of columns), computed by rows on the thread pool when the matrix is large. Every
@@ -1211,7 +1211,7 @@ fn solve_linear(mut a: Array2<f64>, mut rhs: Vec<f64>) -> Option<Vec<f64>> {
 }
 
 /// Candidates x reference points x objectives from which the association runs in parallel.
-const REFSELECT_PAR_MIN_WORK: usize = 1 << 17;
+const REFSELECT_PAR_MIN_WORK: usize = 1 << 16;
 
 /// NSGA-III environmental selection on the critical front (Deb & Jain). Individuals of the fronts
 /// before criLevel are all kept; the remaining quota is filled niche by niche: the least crowded

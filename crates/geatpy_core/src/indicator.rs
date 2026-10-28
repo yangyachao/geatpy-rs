@@ -31,9 +31,12 @@ fn pair(
     Ok((p, r))
 }
 
-/// Distance evaluations x objectives from which GD, IGD and Spacing run in parallel; the per-row
-/// minima are computed in parallel and summed in order, so the result does not change.
-const INDICATOR_PAR_MIN_WORK: usize = 1 << 18;
+/// Distance evaluations x objectives from which GD and IGD run in parallel; the per-row minima are
+/// computed in parallel and summed in order, so the result does not change.
+const INDICATOR_PAR_MIN_WORK: usize = 1 << 16;
+/// The same for Spacing, whose serial path computes each distance once (symmetry) while the
+/// parallel path computes every row in full, so the parallel path starts to pay later.
+const SPACING_PAR_MIN_WORK: usize = 1 << 19;
 
 /// Euclidean distance summed left to right like geatpy 2.7.0's `_cdist_eu` (0.0 for no columns).
 fn dist(a: &Array2<f64>, i: usize, b: &Array2<f64>, k: usize) -> f64 {
@@ -139,7 +142,7 @@ pub fn Spacing<'py>(
     // row i computes only k > i and updates the minima of both ends, a NaN distance tracked apart
     // since f64::min skips NaN. Both give the same bits.
     let pt = crate::utils::transpose(&p);
-    let pool = crate::parallel::pool_for(n * n * m, INDICATOR_PAR_MIN_WORK);
+    let pool = crate::parallel::pool_for(n * n * m, SPACING_PAR_MIN_WORK);
     let d: Vec<f64> = if pool.is_some() {
         crate::parallel::map_collect(pool.as_deref(), n, |i| {
             let mut row = vec![0.0; n];
