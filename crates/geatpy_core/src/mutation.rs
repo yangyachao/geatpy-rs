@@ -650,9 +650,9 @@ pub fn mutde<'py>(
     let flat = chrom.as_slice().expect("converted arrays are row-major");
     let row_of = |k: usize| &flat[k * d..(k + 1) * d];
     let k_vec = 1 + 2 * pairs;
-    // Trial values of row i on `cols` into `out`, with freshly drawn donors and F (the target row
-    // is excluded from the donors when one offspring is produced per individual).
-    let trial = |i: usize, cols: &[usize], rng: &mut rand::rngs::SmallRng, out: &mut [f64]| {
+    // Donor rows and scale factors of row i, freshly drawn (the target row is excluded from the
+    // donors when one offspring is produced per individual).
+    let donors = |i: usize, rng: &mut rand::rngs::SmallRng| {
         let mut skip = (rows == n).then_some(i);
         let mut taken = Vec::with_capacity(k_vec);
         let mut vecs: [&[f64]; 5] = [&[]; 5];
@@ -668,17 +668,18 @@ pub fn mutde<'py>(
         }
         let fa = if f1 < 0.0 { rng.gen::<f64>() } else { f1 };
         let fb = if f2 < 0.0 { rng.gen::<f64>() } else { f2 };
-        for (o, &j) in out.iter_mut().zip(cols) {
-            let x = if b.span[j] > 1e-15 {
-                let mut v = vecs[0][j] + fa * (vecs[1][j] - vecs[2][j]);
-                if pairs == 2 {
-                    v += fb * (vecs[3][j] - vecs[4][j]);
-                }
-                fix_value(v, b.lb[j], b.ub[j], b.span[j], fix, rng)
-            } else {
-                b.lb[j]
-            };
-            *o = if b.discrete[j] { x.round() } else { x };
+        (vecs, fa, fb)
+    };
+    let repair = |v: f64, j: usize, rng: &mut rand::rngs::SmallRng| {
+        let x = if b.span[j] > 1e-15 {
+            fix_value(v, b.lb[j], b.ub[j], b.span[j], fix, rng)
+        } else {
+            b.lb[j]
+        };
+        if b.discrete[j] {
+            x.round()
+        } else {
+            x
         }
     };
     if let Some(m) = mask {
@@ -687,9 +688,12 @@ pub fn mutde<'py>(
             .indexed_iter()
             .filter(|(_, &on)| on)
             .map(|((i, j), _)| {
-                let mut v = [0.0];
-                trial(i, &[j], &mut rng, &mut v);
-                v[0]
+                let (v, fa, fb) = donors(i, &mut rng);
+                let mut x = v[0][j] + fa * (v[1][j] - v[2][j]);
+                if pairs == 2 {
+                    x += fb * (v[3][j] - v[4][j]);
+                }
+                repair(x, j, &mut rng)
             })
             .collect();
         // int32 when every variable is an integer, like the matrix output
@@ -699,15 +703,44 @@ pub fn mutde<'py>(
         }
         return Ok(Array1::from(vals).into_pyarray(py).into_any().unbind());
     }
-    let all_cols: Vec<usize> = (0..d).collect();
     crate::utils::check_alloc(&[rows, d], 8, "float64")?;
     let mut out = Array2::<f64>::zeros((rows, d));
+    // Truncation (the default) draws no random numbers, so its repair is written without calls and
+    // the compiler vectorises it; f64::clamp's lb <= ub assertion is checked once for all genes and
+    // the comparisons below equal clamp when it holds. The other repairs go gene by gene.
+    let truncate = fix == 1 && b.lb.iter().zip(&b.ub).all(|(l, u)| l <= u);
     // With no genes there is nothing to compute (the generator is seeded per call, so skipping
     // the draws is not observable), and a huge integer Mask_N must not loop for nothing.
     if d > 0 {
         let flat_out = out.as_slice_mut().expect("fresh arrays are row-major");
         for (i, row) in flat_out.chunks_exact_mut(d).enumerate() {
-            trial(i, &all_cols, &mut rng, row);
+            let (v, fa, fb) = donors(i, &mut rng);
+            for (((o, &x0), &x1), &x2) in row.iter_mut().zip(v[0]).zip(v[1]).zip(v[2]) {
+                *o = x0 + fa * (x1 - x2);
+            }
+            if pairs == 2 {
+                for ((o, &x3), &x4) in row.iter_mut().zip(v[3]).zip(v[4]) {
+                    *o += fb * (x3 - x4);
+                }
+            }
+            if truncate {
+                let genes = b.lb.iter().zip(&b.ub).zip(&b.span).zip(&b.discrete);
+                for (o, (((&l, &u), &s), &disc)) in row.iter_mut().zip(genes) {
+                    // a degenerate range collapses to lb, like `repair`
+                    let x = if s <= 1e-15 || *o < l {
+                        l
+                    } else if *o > u {
+                        u
+                    } else {
+                        *o
+                    };
+                    *o = if disc { x.round() } else { x };
+                }
+            } else {
+                for (j, o) in row.iter_mut().enumerate() {
+                    *o = repair(*o, j, &mut rng);
+                }
+            }
         }
     }
     crate::utils::ri_out(py, out, &b.discrete)
