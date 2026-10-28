@@ -38,11 +38,12 @@ fn pairing(half_n: Opt, n: usize, name: &str) -> PyResult<Pairing> {
                     Pairing::Full
                 });
             }
-            // a positive int (geatpy 2.7.0 rejects floats such as 3.0)
+            // a positive int (geatpy 2.7.0 rejects floats such as 3.0, and anything that is not a
+            // number, with the same message)
             let k: f64 = if o.is_instance_of::<pyo3::types::PyFloat>() {
                 0.0
             } else {
-                o.extract()?
+                o.extract().unwrap_or(0.0)
             };
             if k < 1.0 || k.fract() != 0.0 {
                 return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -682,8 +683,8 @@ impl<'py> F64Rows<'py> {
 
 /// Real-valued recombination framework: `pair(i, p1, p2, c1, c2, rng)` writes both offspring of
 /// pair i into `c1` and `c2`, which start as copies of the parents (the second offspring is computed
-/// but dropped when only N/2 offspring are returned); `global(j, pa, pb, rng)` is one gene of a
-/// global-mode offspring.
+/// but dropped when only N/2 offspring are returned); `global(r, j, a, pa, pb, rng)` is gene j of
+/// global-mode offspring r, taken from random parents a and b (pa, pb their genes).
 fn real_recombination<'py, F, G>(
     py: Python<'py>,
     name: &str,
@@ -695,7 +696,7 @@ fn real_recombination<'py, F, G>(
 ) -> PyResult<PyObject>
 where
     F: FnMut(usize, &[f64], &[f64], &mut [f64], &mut [f64], &mut rand::rngs::SmallRng),
-    G: FnMut(usize, f64, f64, &mut rand::rngs::SmallRng) -> f64,
+    G: FnMut(usize, usize, usize, f64, f64, &mut rand::rngs::SmallRng) -> f64,
 {
     let (n, l) = chrom.dim();
     let flat = chrom.flat();
@@ -708,7 +709,7 @@ where
             for r in 0..k {
                 for j in 0..l {
                     let (a, b) = random_pair(n, &mut rng);
-                    out[[r, j]] = global(j, flat[a * l + j], flat[b * l + j], &mut rng);
+                    out[[r, j]] = global(r, j, a, flat[a * l + j], flat[b * l + j], &mut rng);
                 }
             }
             out
@@ -787,7 +788,7 @@ pub fn recsbx<'py>(
                 }
             }
         },
-        move |j, a, b, rng| {
+        move |_, j, _, a, b, rng| {
             if rng.gen::<f64>() < 0.5 {
                 let beta = sbx_beta(eta2[j], rng);
                 0.5 * ((1.0 + beta) * a + (1.0 - beta) * b)
@@ -804,32 +805,59 @@ enum Alpha {
     Matrix(Array2<f64>),
 }
 
-/// Alpha: a scalar or a matrix of factors, all in [-0.25, 1.25) as required by geatpy 2.7.0.
-fn parse_alpha(alpha: Opt, name: &str) -> PyResult<Alpha> {
-    let ok = |v: f64| (-0.25..1.25).contains(&v);
-    let illegal = || {
-        pyo3::exceptions::PyRuntimeError::new_err(format!(
-            "error in {0}: The value of Alpha is illegal. (输入参数Alpha的值不合法，详见{0}帮助文档。)",
+/// Alpha as geatpy 2.7.0 checks it: a number in [-0.25, 1.25), or a numpy array of such factors
+/// shaped like the chromosome matrix (recint, one factor per gene) or with one factor per
+/// individual (reclin, a 1-D array of length N). The range tests are `a < -0.25 or a > 1.25` for
+/// a number and `a < -0.25 or a >= 1.25` for the elements of an array, so NaN passes; a bool array
+/// is refused.
+fn parse_alpha(alpha: Opt, name: &str, n: usize, l: usize, per_gene: bool) -> PyResult<Alpha> {
+    use numpy::{PyArrayDescrMethods, PyUntypedArrayMethods};
+    let bad = |v: f64| v < -0.25 || v >= 1.25;
+    let err = |msg: &str| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("error in {0}: {1}", name, msg))
+    };
+    let shape_err = || {
+        err(&format!(
+            "Alpha illegal. (输入参数Alpha不合法，详见{}帮助文档。)",
             name
         ))
     };
-    match alpha {
-        Some(a) if !a.is_none() => {
-            if let Ok(v) = a.extract::<f64>() {
-                if !ok(v) {
-                    return Err(illegal());
-                }
-                Ok(Alpha::Scalar(v))
-            } else {
-                let m = to_f64_array2(a)?;
-                if !m.iter().all(|&v| ok(v)) {
-                    return Err(illegal());
-                }
-                Ok(Alpha::Matrix(m))
-            }
+    let Some(a) = alpha.filter(|a| !a.is_none()) else {
+        return Ok(Alpha::Random);
+    };
+    let Ok(arr) = a.downcast::<numpy::PyUntypedArray>() else {
+        let v: f64 = a.extract().map_err(|_| shape_err())?;
+        if v < -0.25 || v > 1.25 {
+            return Err(err(&format!(
+                "The value of Alpha is illegal. (输入参数Alpha的值不合法，详见{}帮助文档。)",
+                name
+            )));
         }
-        _ => Ok(Alpha::Random),
+        return Ok(Alpha::Scalar(v));
+    };
+    let shape_ok = if per_gene {
+        arr.shape() == [n, l]
+    } else {
+        arr.shape() == [n]
+    };
+    if !shape_ok {
+        return Err(shape_err());
     }
+    let elements_err = || {
+        err(&format!(
+            "Some elements of Alpha are illegal. (输入参数Alpha的数据不合法，详见{}帮助文档。)",
+            name
+        ))
+    };
+    if arr.dtype().is_equiv_to(&numpy::dtype::<bool>(a.py())) {
+        return Err(elements_err());
+    }
+    // a 1-D array becomes one column: row r holds the factor of individual r
+    let m = to_f64_array2(a)?;
+    if m.iter().any(|&v| bad(v)) {
+        return Err(elements_err());
+    }
+    Ok(Alpha::Matrix(m))
 }
 
 fn intermediate<'py>(
@@ -841,11 +869,15 @@ fn intermediate<'py>(
     alpha: Opt,
     per_gene: bool,
 ) -> PyResult<PyObject> {
-    let alpha = parse_alpha(alpha, name)?;
-    let draw = |rng: &mut rand::rngs::SmallRng| rng.gen::<f64>() * 1.5 - 0.25;
+    // geatpy 2.7.0 checks RecOpt and Half_N before the chromosome and Alpha
+    let pc = prob(rec_opt, 0.7, name)?;
+    pairing(half_n, usize::MAX, name)?;
     let chrom = F64Rows::new(old)?;
-    let half = chrom.dim().0 / 2;
-    // c = p1 + a (p2 - p1) for every gene of one offspring (`row` selects the Alpha matrix row)
+    let (n, l) = chrom.dim();
+    let alpha = parse_alpha(alpha, name, n, l, per_gene)?;
+    let draw = |rng: &mut rand::rngs::SmallRng| rng.gen::<f64>() * 1.5 - 0.25;
+    let half = n / 2;
+    // c = p1 + a (p2 - p1) for every gene of offspring `row` (the row of the Alpha matrix it uses)
     let child = |row: usize,
                  p1: &[f64],
                  p2: &[f64],
@@ -855,12 +887,14 @@ fn intermediate<'py>(
         let genes = c.iter_mut().zip(p1.iter().zip(p2));
         match &alpha {
             Alpha::Scalar(a) => genes.for_each(|(c, (&x, &y))| *c = x + a * (y - x)),
-            Alpha::Matrix(m) => {
-                let r = row.min(m.shape()[0] - 1);
-                let last = m.shape()[1] - 1;
+            Alpha::Matrix(m) if per_gene => {
                 for (j, (c, (&x, &y))) in genes.enumerate() {
-                    *c = x + m[[r, j.min(last)]] * (y - x);
+                    *c = x + m[[row, j]] * (y - x);
                 }
+            }
+            Alpha::Matrix(m) => {
+                let a = m[[row, 0]];
+                genes.for_each(|(c, (&x, &y))| *c = x + a * (y - x))
             }
             Alpha::Random if per_gene => {
                 genes.for_each(|(c, (&x, &y))| *c = x + draw(rng) * (y - x))
@@ -868,28 +902,34 @@ fn intermediate<'py>(
             Alpha::Random => genes.for_each(|(c, (&x, &y))| *c = x + shared * (y - x)),
         }
     };
-    let factor = |j: usize, rng: &mut rand::rngs::SmallRng, shared: f64| -> f64 {
-        match &alpha {
-            Alpha::Scalar(a) => *a,
-            Alpha::Matrix(m) => m[[0, j.min(m.shape()[1] - 1)]],
-            Alpha::Random if per_gene => draw(rng),
-            Alpha::Random => shared,
-        }
-    };
+    // Global mode, as geatpy 2.7.0: recint takes gene j's factor from the row of the individual
+    // the gene starts from (its first random parent), reclin uses one factor per offspring.
+    let mut row_factor = 0.0;
     real_recombination(
         py,
         name,
         chrom,
-        prob(rec_opt, 0.7, name)?,
+        pc,
         half_n,
         |i, p1, p2, c1, c2, rng| {
             let (s1, s2) = (draw(rng), draw(rng));
             child(i, p1, p2, c1, rng, s1);
             child(i + half, p1, p2, c2, rng, s2);
         },
-        |j, a, b, rng| {
+        |r, j, from, a, b, rng| {
+            // drawn for every gene whatever Alpha is, which keeps the random sequence
             let s = draw(rng);
-            a + factor(j, rng, s) * (b - a)
+            if j == 0 {
+                row_factor = s;
+            }
+            let f = match &alpha {
+                Alpha::Scalar(a) => *a,
+                Alpha::Matrix(m) if per_gene => m[[from, j]],
+                Alpha::Matrix(m) => m[[r, 0]],
+                Alpha::Random if per_gene => draw(rng),
+                Alpha::Random => row_factor,
+            };
+            a + f * (b - a)
         },
     )
 }
@@ -970,7 +1010,7 @@ pub fn recndx<'py>(
                 }
             }
         },
-        move |j, x, y, rng| {
+        move |_, j, _, x, y, rng| {
             if rng.gen::<f64>() >= 0.5 {
                 gene(aa2[j], x, y, rng).0
             } else {
@@ -1090,7 +1130,8 @@ fn ox_into<T: Gene>(
                     s.rest[w] = v;
                     w += usize::from(s.kept[ix.key(v)] != s.tag);
                 }
-                // rows holding different gene sets can leave too few genes, as `filter` below
+                // check_permutation makes the genes of a row distinct, so at most kept.len() of the
+                // partner's genes are dropped and enough remain
                 assert!(
                     w >= lo + tail.len(),
                     "the partner lacks genes to fill the offspring"

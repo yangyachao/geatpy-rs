@@ -289,7 +289,11 @@ fn decode_view<T: Copy>(
             }
             let k = v as f64;
             *x = match var.rule {
-                Rule::Int { lb, span, div } => (lb + (k as i64 * span) / div) as f64,
+                // a 0-bit code divides by 2^0 - 1 = 0: geatpy 2.7.0 (arm64, where integer
+                // division by zero gives 0) returns lb
+                Rule::Int { lb, span, div } => {
+                    (lb + (k as i64 * span).checked_div(div).unwrap_or(0)) as f64
+                }
                 Rule::Rounded { lb, span, div } => lb + (k * span / div + 0.5).trunc(),
                 Rule::Real {
                     lb,

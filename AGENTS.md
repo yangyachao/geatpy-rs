@@ -56,6 +56,9 @@ geatpy 2.7.0 的 Python 层原样保留，闭源 Cython 内核 `_core` 用 Rust 
     Spacing 中得到垃圾值，Rust 转为 float64。
   - NaN：GD/IGD 跳过含 NaN 的候选点（原版只有 NaN 恰在一行末尾时才得到 NaN），被平均的点到所有候选的距离都是 NaN
     时结果为 NaN；HV 排除含 NaN 的点（原版是否得到 NaN 取决于位置和 M），PF 某列全是 NaN 时为 NaN。
+- 原版缺陷（2026-10-28 确认）：`recint`/`reclin` 的 Alpha 为整数、float32 或 bool 数组时，原版按 float64 读取其内存
+  （值是垃圾，或随机报“Some elements of Alpha are illegal”）；Rust 转为 float64，bool 数组报该错误。
+  `bs2int` 的 FieldD 码长为 0 时除以 2^0 - 1 = 0：x86_64 原版整数除零崩溃，arm64 原版得到下界，Rust 取下界。
 - `refselect` 极点矩阵奇异（多为同一个体同时是几个目标的极点）时，原版 numpy LU 因舍入得到 det≈1e-19≠0，
   解出无意义（甚至为负）的截距；Rust 用除法消元得到精确零主元，退回列最大值（随机 3 目标用例约 1.5%，
   8–12 目标更常见）。其余步骤按原版 arm64 轮子的舍入实现：LU 主元按 OpenBLAS `idamax`（含 NaN 时的行为）、
