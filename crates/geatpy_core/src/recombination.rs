@@ -644,6 +644,42 @@ pub fn recdis<'py>(
     )
 }
 
+/// A chromosome matrix as row-major f64: numpy's own buffer when it already is a C-contiguous
+/// float64 matrix (no copy), a converted copy otherwise.
+enum F64Rows<'py> {
+    View(numpy::PyReadonlyArray2<'py, f64>),
+    Owned(Array2<f64>),
+}
+
+impl<'py> F64Rows<'py> {
+    fn new(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
+        if let Ok(ro) = obj.extract::<numpy::PyReadonlyArray2<'py, f64>>() {
+            if ro.as_slice().is_ok() {
+                use numpy::PyUntypedArrayMethods;
+                // the size check the conversion makes first
+                crate::utils::check_alloc(ro.shape(), 8, "float64")?;
+                return Ok(F64Rows::View(ro));
+            }
+        }
+        Ok(F64Rows::Owned(to_f64_array2(obj)?))
+    }
+
+    fn dim(&self) -> (usize, usize) {
+        use numpy::PyUntypedArrayMethods;
+        match self {
+            F64Rows::View(v) => (v.shape()[0], v.shape()[1]),
+            F64Rows::Owned(a) => a.dim(),
+        }
+    }
+
+    fn flat(&self) -> &[f64] {
+        match self {
+            F64Rows::View(v) => v.as_slice().expect("checked contiguous"),
+            F64Rows::Owned(a) => a.as_slice().expect("converted arrays are row-major"),
+        }
+    }
+}
+
 /// Real-valued recombination framework: `pair(i, p1, p2, c1, c2, rng)` writes both offspring of
 /// pair i into `c1` and `c2`, which start as copies of the parents (the second offspring is computed
 /// but dropped when only N/2 offspring are returned); `global(j, pa, pb, rng)` is one gene of a
@@ -651,7 +687,7 @@ pub fn recdis<'py>(
 fn real_recombination<'py, F, G>(
     py: Python<'py>,
     name: &str,
-    chrom: Array2<f64>,
+    chrom: F64Rows<'py>,
     pc: f64,
     half_n: Opt,
     mut pair: F,
@@ -661,7 +697,8 @@ where
     F: FnMut(usize, &[f64], &[f64], &mut [f64], &mut [f64], &mut rand::rngs::SmallRng),
     G: FnMut(usize, f64, f64, &mut rand::rngs::SmallRng) -> f64,
 {
-    let (n, l) = (chrom.shape()[0], chrom.shape()[1]);
+    let (n, l) = chrom.dim();
+    let flat = chrom.flat();
     let half = n / 2;
     let mut rng = crate::utils::rng();
     let out = match pairing(half_n, n, name)? {
@@ -671,14 +708,13 @@ where
             for r in 0..k {
                 for j in 0..l {
                     let (a, b) = random_pair(n, &mut rng);
-                    out[[r, j]] = global(j, chrom[[a, j]], chrom[[b, j]], &mut rng);
+                    out[[r, j]] = global(j, flat[a * l + j], flat[b * l + j], &mut rng);
                 }
             }
             out
         }
         mode => {
             let full = matches!(mode, Pairing::Full);
-            let flat = chrom.as_slice().expect("converted arrays are row-major");
             let mut out = if full {
                 flat.to_vec()
             } else {
@@ -733,8 +769,8 @@ pub fn recsbx<'py>(
     parallel: Opt<'_, 'py>,
 ) -> PyResult<PyObject> {
     let _ = parallel;
-    let chrom = to_f64_array2(old_chrom)?;
-    let eta = non_negative(n, chrom.ncols(), 20.0, "recsbx", "n")?;
+    let chrom = F64Rows::new(old_chrom)?;
+    let eta = non_negative(n, chrom.dim().1, 20.0, "recsbx", "n")?;
     let eta2 = eta.clone();
     real_recombination(
         py,
@@ -807,8 +843,8 @@ fn intermediate<'py>(
 ) -> PyResult<PyObject> {
     let alpha = parse_alpha(alpha, name)?;
     let draw = |rng: &mut rand::rngs::SmallRng| rng.gen::<f64>() * 1.5 - 0.25;
-    let chrom = to_f64_array2(old)?;
-    let half = chrom.shape()[0] / 2;
+    let chrom = F64Rows::new(old)?;
+    let half = chrom.dim().0 / 2;
     // c = p1 + a (p2 - p1) for every gene of one offspring (`row` selects the Alpha matrix row)
     let child = |row: usize,
                  p1: &[f64],
@@ -905,8 +941,8 @@ pub fn recndx<'py>(
     parallel: Opt<'_, 'py>,
 ) -> PyResult<PyObject> {
     let _ = parallel;
-    let chrom = to_f64_array2(old_chrom)?;
-    let aa = non_negative(a, chrom.ncols(), 1.4826, "recndx", "A")?;
+    let chrom = F64Rows::new(old_chrom)?;
+    let aa = non_negative(a, chrom.dim().1, 1.4826, "recndx", "A")?;
     let aa2 = aa.clone();
     let gene = |aj: f64, x: f64, y: f64, rng: &mut rand::rngs::SmallRng| -> (f64, f64) {
         let mean = (x + y) * 0.5;
