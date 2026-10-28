@@ -141,7 +141,7 @@ const FRONT_PAR_MIN_WORK: usize = 2048;
 /// or, once the front is large, in two parallel steps: drop the candidates the front before the
 /// block dominates, then keep each survivor no earlier survivor dominates. A candidate dominated
 /// by a dropped one is dominated by the front too (dominance is transitive), so this finds exactly
-/// the serial front with the same comparisons.
+/// the serial front. Checks against the front go through `front_dominates`.
 fn front_levels(
     pts: &[f64],
     w: usize,
@@ -168,6 +168,8 @@ fn front_levels(
         return (lv, cri_level);
     }
     let mut front: Vec<usize> = Vec::new();
+    // the front's objectives by column, for `front_dominates`
+    let mut cols: Vec<Vec<f64>> = vec![Vec::new(); w];
     let mut cand: Vec<usize> = Vec::with_capacity(chunk);
     loop {
         cri_level += 1;
@@ -175,6 +177,7 @@ fn front_levels(
             break;
         }
         front.clear();
+        cols.iter_mut().for_each(Vec::clear);
         if w == 1 {
             for (i, &l) in lv.iter().enumerate() {
                 if l == 0 && front.last().is_none_or(|&j| !dominates(j, i)) {
@@ -197,15 +200,24 @@ fn front_levels(
                 {
                     None => {
                         for &i in &cand {
-                            if !front.iter().rev().any(|&j| dominates(j, i)) {
+                            // one objective (w = 0): every earlier member (weakly) dominates
+                            let open = if w == 0 {
+                                front.is_empty()
+                            } else {
+                                !front_dominates(&cols, row(i))
+                            };
+                            if open {
                                 front.push(i);
+                                for (col, &v) in cols.iter_mut().zip(row(i)) {
+                                    col.push(v);
+                                }
                             }
                         }
                     }
                     Some(p) => {
-                        let earlier = &front;
+                        let earlier = &cols;
                         let open = crate::parallel::map_collect(Some(p), cand.len(), |t| {
-                            !earlier.iter().rev().any(|&j| dominates(j, cand[t]))
+                            !front_dominates(earlier, row(cand[t]))
                         });
                         let survivors: Vec<usize> = cand
                             .iter()
@@ -219,13 +231,12 @@ fn front_levels(
                                 .rev()
                                 .any(|&j| dominates(j, survivors[t]))
                         });
-                        front.extend(
-                            survivors
-                                .iter()
-                                .zip(keep)
-                                .filter(|(_, k)| *k)
-                                .map(|(&i, _)| i),
-                        );
+                        for (&i, _) in survivors.iter().zip(keep).filter(|(_, k)| *k) {
+                            front.push(i);
+                            for (col, &v) in cols.iter_mut().zip(row(i)) {
+                                col.push(v);
+                            }
+                        }
                     }
                 }
             }
@@ -406,6 +417,42 @@ fn numpy_unique_rows(py: Python<'_>, obj: &[Vec<f64>]) -> PyResult<UniqueRows> {
         .extract()?;
     let counts: Vec<usize> = res.get_item(2)?.call_method0("tolist")?.extract()?;
     Ok((uni.iter().cloned().collect(), counts, inverse))
+}
+
+/// Front members `front_dominates` compares with a candidate at once.
+const FRONT_BLOCK: usize = 64;
+
+/// Whether a member of a front weakly dominates `x`; `cols` holds the members' objectives by column,
+/// oldest first. The latest member is tested alone first (with many fronts it usually settles it),
+/// then blocks of the latest members, every member of a block on every objective: no early exit,
+/// which the branch predictor cannot follow, so the loops vectorise.
+fn front_dominates(cols: &[Vec<f64>], x: &[f64]) -> bool {
+    let len = cols.first().map_or(0, Vec::len);
+    if len == 0 {
+        return false;
+    }
+    if cols.iter().zip(x).all(|(c, &b)| c[len - 1] <= b) {
+        return true;
+    }
+    let mut hit = [false; FRONT_BLOCK];
+    let mut end = len - 1;
+    while end > 0 {
+        let start = end.saturating_sub(FRONT_BLOCK);
+        let hit = &mut hit[..end - start];
+        for (h, &a) in hit.iter_mut().zip(&cols[0][start..end]) {
+            *h = a <= x[0];
+        }
+        for (col, &b) in cols.iter().zip(x).skip(1) {
+            for (h, &a) in hit.iter_mut().zip(&col[start..end]) {
+                *h &= a <= b;
+            }
+        }
+        if hit.iter().any(|&h| h) {
+            return true;
+        }
+        end = start;
+    }
+    false
 }
 
 /// Efficient non-dominated sort (ENS-SS) over unique rows sorted lexicographically, one complete

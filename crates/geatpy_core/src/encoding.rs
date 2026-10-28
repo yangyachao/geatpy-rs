@@ -289,7 +289,11 @@ fn decode_view<T: Copy>(
             }
             let k = v as f64;
             *x = match var.rule {
-                Rule::Int { lb, span, div } => (lb + (k as i64 * span) / div) as f64,
+                // a 0-bit code divides by 2^0 - 1 = 0: geatpy 2.7.0 (arm64, where integer
+                // division by zero gives 0) returns lb
+                Rule::Int { lb, span, div } => {
+                    (lb + (k as i64 * span).checked_div(div).unwrap_or(0)) as f64
+                }
                 Rule::Rounded { lb, span, div } => lb + (k * span / div + 0.5).trunc(),
                 Rule::Real {
                     lb,
@@ -571,12 +575,43 @@ pub fn crtip<'py>(
 ) -> PyResult<PyObject> {
     let _ = parallel;
     let b = self::field_dr(field_dr)?;
-    crate::utils::check_alloc(&[nind, b.lb.len()], 8, "float64")?;
+    let d = b.lb.len();
+    crate::utils::check_alloc(&[nind, d], 8, "float64")?;
     let mut rng = crate::utils::rng();
-    let chrom = Array2::from_shape_fn((nind, b.lb.len()), |(_, j)| {
-        uniform_int(b.lb[j], b.ub[j], &mut rng)
-    });
-    crate::utils::chrom_out(py, chrom, true)
+    // `uniform_int` per gene with the per-column constants of rand 0.8's
+    // `gen_range(lo..=hi)` (i64, widened to u64) computed once: a u64 is drawn, multiplied by the
+    // range, and rejected while the low half exceeds the zone. The int32 output equals rounding
+    // the f64 values `uniform_int` returns.
+    // (lo, Some((range, zone))), or (ceil(lb), None) for a range without integers (no draw)
+    let cols: Vec<(i64, Option<(u64, u64)>)> = (0..d)
+        .map(|j| {
+            let (lo, hi) = (b.lb[j].ceil() as i64, b.ub[j].floor() as i64);
+            let draw = (lo <= hi).then(|| {
+                let range = hi.wrapping_sub(lo).wrapping_add(1) as u64;
+                (range, (range << range.leading_zeros()).wrapping_sub(1))
+            });
+            (lo, draw)
+        })
+        .collect();
+    let mut out = Vec::with_capacity(nind * d);
+    for _ in 0..nind {
+        for &(lo, draw) in &cols {
+            let v = match draw {
+                None => lo,
+                // lo..=hi spans every i64
+                Some((0, _)) => rng.gen::<i64>(),
+                Some((range, zone)) => loop {
+                    let x = u128::from(rng.gen::<u64>()) * u128::from(range);
+                    if (x as u64) <= zone {
+                        break lo.wrapping_add((x >> 64) as i64);
+                    }
+                },
+            };
+            out.push((v as f64) as i32);
+        }
+    }
+    let chrom = Array2::from_shape_vec((nind, d), out).expect("shape matches");
+    Ok(chrom.into_pyarray(py).into_any().unbind())
 }
 
 /// Random real population, uniform in [lb, ub) (varTypes ignored).

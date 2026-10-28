@@ -369,3 +369,123 @@ def test_mselecting_gives_every_population_its_minimum(sel, msel):
         chosen = ea.mselecting(sel, fits, nsel, msel)
         assert [len(c) >= m for c, m in zip(chosen, mins)] == [True] * 3
         assert all(0 <= i < s for c, s in zip(chosen, sizes) for i in c)
+
+
+# --- recint / reclin Alpha, Half_N (2026-10-28) -----------------------------------------------
+
+_X = np.random.RandomState(7).rand(6, 3)
+
+
+@pytest.mark.parametrize('fn, alpha', [
+    (ea.recint, np.full((6, 2), 0.3)), (ea.recint, np.full((3, 3), 0.3)), (ea.recint, np.full(3, 0.3)),
+    (ea.recint, np.zeros((0, 3))), (ea.recint, np.full((6, 3, 1), 0.3)), (ea.recint, [0.3] * 3),
+    (ea.recint, 'x'), (ea.reclin, np.full(3, 0.3)), (ea.reclin, np.full((6, 1), 0.3)),
+    (ea.reclin, np.full((1, 6), 0.3)), (ea.reclin, np.full((6, 3), 0.3)), (ea.reclin, np.zeros(0)),
+    (ea.reclin, [0.3] * 6),
+])
+def test_alpha_must_have_the_documented_shape(fn, alpha):
+    # recint: an N x L matrix; reclin: a 1-D array of length N (a bad shape is reported before
+    # bad values)
+    with pytest.raises(RuntimeError, match=r'error in %s: Alpha illegal\.' % fn.__name__):
+        fn(_X, 1, False, alpha)
+
+
+@pytest.mark.parametrize('fn, alpha', [
+    (ea.recint, np.full((6, 3), 1.25)), (ea.recint, np.full((6, 3), np.inf)),
+    (ea.reclin, np.full(6, -0.3)), (ea.reclin, np.full(6, 1.25)),
+])
+def test_alpha_elements_out_of_range(fn, alpha):
+    with pytest.raises(RuntimeError, match='Some elements of Alpha are illegal'):
+        fn(_X, 1, False, alpha)
+
+
+@pytest.mark.parametrize('fn', [ea.recint, ea.reclin])
+def test_alpha_scalar_range_is_closed(fn):
+    # a number may be 1.25 (an array element may not)
+    for v in (-0.25, 1.25):
+        assert fn(_X, 1, False, v).shape == (6, 3)
+    for v in (-0.2500001, 1.2500001):
+        with pytest.raises(RuntimeError, match='The value of Alpha is illegal'):
+            fn(_X, 1, False, v)
+
+
+@pytest.mark.parametrize('fn, alpha', [
+    (ea.recint, nan), (ea.reclin, nan), (ea.recint, np.full((6, 3), nan)), (ea.reclin, np.full(6, nan)),
+    (ea.reclin, np.full(6, -0.25)),
+])
+def test_alpha_range_check_lets_nan_through(fn, alpha):
+    # geatpy 2.7.0 tests a < -0.25 or a >= 1.25
+    assert fn(_X, 1, False, alpha).shape == (6, 3)
+
+
+@pytest.mark.parametrize('fn', [ea.recint, ea.reclin])
+def test_recopt_and_half_n_are_checked_before_alpha(fn):
+    with pytest.raises(RuntimeError, match='RecOpt must be in'):
+        fn(_X, 5, False, np.full((6, 2), 9.0))
+    with pytest.raises(RuntimeError, match='Half_N error'):
+        fn(_X, 1, 'x', np.full((6, 2), 9.0))
+
+
+@pytest.mark.parametrize('fn, chrom', [
+    (ea.recint, _X), (ea.reclin, _X), (ea.recsbx, _X), (ea.xovdp, _X), (ea.recdis, _X),
+])
+@pytest.mark.parametrize('half_n', ['x', [1], 2.0, -1])
+def test_half_n_that_is_not_a_positive_int(fn, chrom, half_n):
+    with pytest.raises(RuntimeError, match='Half_N error'):
+        fn(chrom, 0.5, half_n)
+
+
+def _global_rows(fn, alpha, seeds=10):
+    # X[r] = 3^r makes (parent a, parent b, Alpha row) recoverable from every offspring gene
+    n, l = 6, 4
+    x = np.array([[3.0 ** r + 0.1 * j for j in range(l)] for r in range(n)])
+    used = set()
+    for seed in range(seeds):
+        np.random.seed(seed)
+        out = fn(x, 1, n, alpha)
+        for i in range(out.shape[0]):
+            for j in range(l):
+                hits = {(a, r) if alpha.ndim == 2 else (i, r)
+                        for a in range(n) for b in range(n) for r in range(n)
+                        if a != b and abs(x[a, j] + (alpha[r, j] if alpha.ndim == 2 else alpha[r])
+                                          * (x[b, j] - x[a, j]) - out[i, j]) < 1e-9}
+                used.add(any(k == r for k, r in hits))
+    return used
+
+
+def test_global_recint_takes_alpha_from_the_first_parent():
+    alpha = np.array([[0.05 + 0.1 * r + 0.013 * j for j in range(4)] for r in range(6)])
+    assert _global_rows(ea.recint, alpha) == {True}
+
+
+def test_global_reclin_uses_one_alpha_per_offspring():
+    alpha = np.array([0.05, 0.17, 0.29, 0.41, 0.53, 0.65])
+    assert _global_rows(ea.reclin, alpha) == {True}
+    x = np.vstack([np.zeros((3, 5)), np.ones((3, 5))])
+    for seed in range(5):
+        np.random.seed(seed)
+        for row in ea.reclin(x, 1, 6):
+            mixed = {round(min(v, 1 - v), 9) for v in row if v not in (0.0, 1.0)}
+            assert len(mixed) <= 1
+
+
+@rust_only  # the original reads a bool, integer or float32 Alpha buffer as float64 (garbage)
+def test_alpha_arrays_of_other_dtypes():
+    with pytest.raises(RuntimeError, match='Some elements of Alpha are illegal'):
+        ea.recint(_X, 1, False, np.zeros((6, 3), bool))
+    for dtype in (np.int64, np.int32, np.float32):
+        np.random.seed(0)
+        got = ea.recint(_X, 1, False, np.ones((6, 3), dtype))
+        np.random.seed(0)
+        np.testing.assert_array_equal(got, ea.recint(_X, 1, False, np.ones((6, 3))))
+    np.random.seed(0)
+    got = ea.reclin(_X, 1, False, np.full(6, 0.5, np.float32))
+    np.random.seed(0)
+    np.testing.assert_array_equal(got, ea.reclin(_X, 1, False, np.full(6, 0.5)))
+
+
+@rust_only  # 2^0 - 1 = 0: the x86_64 original traps on the integer division; arm64 returns lb
+def test_bs2int_zero_length_code_gives_the_lower_bound():
+    fd = np.array([[0, 3], [2, 0], [9, 7], [0, 0], [0, 0], [1, 1], [1, 1], [1, 1]], float)
+    b = np.array([[1, 0, 1], [0, 1, 1]], dtype=np.int32)
+    np.testing.assert_array_equal(ea.bs2int(b, fd), [[2, 5], [2, 3]])
