@@ -133,25 +133,60 @@ pub fn Spacing<'py>(
         ));
     }
     // np.min over each row of the distance matrix with an infinite diagonal (NaN propagates); a row
-    // of L1 distances is accumulated for all k at once from a column-major copy, so the loop over k
-    // vectorises (every distance is still the sum from 0.0 in order of j)
+    // of L1 distances is accumulated for all k at once from a column-major copy, so the loops over
+    // k vectorise (every distance is still the sum from 0.0 in order of j). With a pool every row is
+    // computed in full in parallel; on one thread the symmetry (|a - b| = |b - a|) halves the work:
+    // row i computes only k > i and updates the minima of both ends, a NaN distance tracked apart
+    // since f64::min skips NaN. Both give the same bits.
     let pt = crate::utils::transpose(&p);
     let pool = crate::parallel::pool_for(n * n * m, INDICATOR_PAR_MIN_WORK);
-    let d: Vec<f64> = crate::parallel::map_collect(pool.as_deref(), n, |i| {
+    let d: Vec<f64> = if pool.is_some() {
+        crate::parallel::map_collect(pool.as_deref(), n, |i| {
+            let mut row = vec![0.0; n];
+            for (j, col) in pt.chunks_exact(n).enumerate().take(m) {
+                let x = p[[i, j]];
+                for (o, &y) in row.iter_mut().zip(col) {
+                    *o += (x - y).abs();
+                }
+            }
+            row[i] = f64::INFINITY;
+            if row.iter().any(|x| x.is_nan()) {
+                f64::NAN
+            } else {
+                row.iter().copied().fold(f64::INFINITY, f64::min)
+            }
+        })
+    } else {
+        let mut best = vec![f64::INFINITY; n];
+        let mut nan = vec![false; n];
         let mut row = vec![0.0; n];
-        for (j, col) in pt.chunks_exact(n).enumerate().take(m) {
-            let x = p[[i, j]];
-            for (o, &y) in row.iter_mut().zip(col) {
-                *o += (x - y).abs();
+        for i in 0..n {
+            let r = &mut row[i + 1..];
+            r.fill(0.0);
+            for (j, col) in pt.chunks_exact(n).enumerate().take(m) {
+                let x = p[[i, j]];
+                for (o, &y) in r.iter_mut().zip(&col[i + 1..]) {
+                    *o += (x - y).abs();
+                }
+            }
+            let (bi, ni) = r
+                .iter()
+                .fold((best[i], nan[i]), |(b, f), &d| (b.min(d), f | d.is_nan()));
+            (best[i], nan[i]) = (bi, ni);
+            for ((b, f), &d) in best[i + 1..]
+                .iter_mut()
+                .zip(&mut nan[i + 1..])
+                .zip(r.iter())
+            {
+                *b = b.min(d);
+                *f |= d.is_nan();
             }
         }
-        row[i] = f64::INFINITY;
-        if row.iter().any(|x| x.is_nan()) {
-            f64::NAN
-        } else {
-            row.iter().copied().fold(f64::INFINITY, f64::min)
-        }
-    });
+        best.iter()
+            .zip(&nan)
+            .map(|(&b, &f)| if f { f64::NAN } else { b })
+            .collect()
+    };
     let np = py.import("numpy")?;
     let var = np.call_method1("var", (numpy::ndarray::Array1::from(d).into_pyarray(py),))?;
     let ratio = var.mul(n)?.div(n as i64 - 1)?;
