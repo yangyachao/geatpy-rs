@@ -4,7 +4,7 @@ version = "2.8.0-beta.2"
 edition = "2021"
 authors = ["yangyachao <yangyachao@live.cn>"]
 homepage = "https://www.yangyachao.com"
-repository = "https://github.com/yangyachao/geatpy"
+repository = "https://github.com/yangyachao/geatpy-rs"
 description = "High-performance Rust implementation of Geatpy core operators"
 license = "LGPL-3.0"
 
