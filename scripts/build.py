@@ -102,6 +102,9 @@ def main():
         "build",
         "-o",
         str(DIST_DIR),
+        # this interpreter: abi3 wheel normally, a cp314t wheel on free-threaded CPython
+        "-i",
+        sys.executable,
     ]
 
     if not args.debug:

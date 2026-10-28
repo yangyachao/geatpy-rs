@@ -354,7 +354,7 @@ fn decode_bg<'py>(
     chrom: &Bound<'py, PyAny>,
     field: &Bound<'py, PyAny>,
     mode: Decode,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let name = match mode {
         Decode::Mixed => "bs2ri",
         Decode::Real => "bs2real",
@@ -383,7 +383,7 @@ pub fn bs2ri<'py>(
     chrom: &Bound<'py, PyAny>,
     field_d: &Bound<'py, PyAny>,
     parallel: Option<&Bound<'py, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     decode_bg(py, chrom, field_d, Decode::Mixed)
 }
@@ -396,7 +396,7 @@ pub fn bs2real<'py>(
     chrom: &Bound<'py, PyAny>,
     field_d: &Bound<'py, PyAny>,
     parallel: Option<&Bound<'py, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     decode_bg(py, chrom, field_d, Decode::Real)
 }
@@ -409,7 +409,7 @@ pub fn bs2int<'py>(
     chrom: &Bound<'py, PyAny>,
     field_d: &Bound<'py, PyAny>,
     parallel: Option<&Bound<'py, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     decode_bg(py, chrom, field_d, Decode::Int)
 }
@@ -422,7 +422,7 @@ pub fn ri2bs<'py>(
     phen: &Bound<'py, PyAny>,
     field_d: &Bound<'py, PyAny>,
     parallel: Option<&Bound<'py, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     let p = crate::utils::to_f64_array2(phen)?;
     let f = parse_field_d(field_d, None, "ri2bs")?;
@@ -477,7 +477,7 @@ pub fn boundfix<'py>(
     field_dr: &Bound<'py, PyAny>,
     fix_type: Option<&Bound<'py, PyAny>>,
     parallel: Option<&Bound<'py, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     if encoding != "RI" {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
@@ -518,7 +518,7 @@ pub fn crtbp<'py>(
     nind: &Bound<'py, PyAny>,
     lind: &Bound<'py, PyAny>,
     params2: Option<&Bound<'py, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = params2;
     let nind = positive_int(
         nind,
@@ -531,7 +531,7 @@ pub fn crtbp<'py>(
     random_bits(py, nind, lind)
 }
 
-fn random_bits(py: Python<'_>, nind: usize, lind: usize) -> PyResult<PyObject> {
+fn random_bits(py: Python<'_>, nind: usize, lind: usize) -> PyResult<Py<PyAny>> {
     crate::utils::check_alloc(&[nind, lind], 8, "int64")?;
     let mut rng = crate::utils::rng();
     // The draws of rand 0.8's `gen_range(0..2)`, written out so the loop does not branch on them:
@@ -592,7 +592,7 @@ pub fn crtip<'py>(
     nind: usize,
     field_dr: &Bound<'py, PyAny>,
     parallel: Option<&Bound<'py, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     let b = self::field_dr(field_dr, "crtip")?;
     let d = b.lb.len();
@@ -642,7 +642,7 @@ pub fn crtrp<'py>(
     nind: usize,
     field_dr: &Bound<'py, PyAny>,
     parallel: Option<&Bound<'py, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     let b = self::field_dr(field_dr, "crtrp")?;
     crate::utils::check_alloc(&[nind, b.lb.len()], 8, "float64")?;
@@ -661,7 +661,7 @@ pub fn crtri<'py>(
     nind: usize,
     field_dr: &Bound<'py, PyAny>,
     parallel: Option<&Bound<'py, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     let b = self::field_dr(field_dr, "crtri")?;
     crate::utils::check_alloc(&[nind, b.lb.len()], 8, "float64")?;
@@ -684,7 +684,7 @@ pub fn crtpp<'py>(
     nind: usize,
     field_dr: &Bound<'py, PyAny>,
     parallel: Option<&Bound<'py, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     let b = self::field_dr(field_dr, "crtpp")?;
     let lind = b.lb.len();
@@ -727,7 +727,7 @@ pub fn crtpc<'py>(
     nind: usize,
     field: &Bound<'py, PyAny>,
     parallel: Option<&Bound<'py, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     match encoding {
         "BG" => {
             let f = crate::utils::to_f64_array2(field)?;

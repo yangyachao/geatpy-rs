@@ -1,16 +1,17 @@
 use numpy::ndarray::{Array1, Array2};
 use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
-use pyo3::sync::GILOnceCell;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::IntoPyDict;
 
 /// Random generator for one operator call, seeded from numpy's global RandomState: like geatpy
 /// 2.7.0, `np.random.seed` (and `ea.optimize(seed=...)`) then makes whole runs reproducible.
-/// Every caller holds the GIL, so `with_gil` only re-enters it.
+/// Every caller is attached to the interpreter, so `attach` only re-enters it; on free-threaded
+/// CPython the lock of numpy's bit generator serialises concurrent seed draws.
 pub fn rng() -> rand::rngs::SmallRng {
     use rand::SeedableRng;
-    static RANDINT: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
-    let seed = Python::with_gil(|py| -> PyResult<u64> {
+    static RANDINT: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    let seed = Python::attach(|py| -> PyResult<u64> {
         let randint = RANDINT.get_or_try_init(py, || -> PyResult<Py<PyAny>> {
             Ok(py.import("numpy.random")?.getattr("randint")?.unbind())
         })?;
@@ -110,7 +111,7 @@ fn check_ndim(
     expected: usize,
     accepted: impl Fn(&[usize]) -> bool,
 ) -> PyResult<()> {
-    if let Ok(arr) = obj.downcast::<numpy::PyUntypedArray>() {
+    if let Ok(arr) = obj.cast::<numpy::PyUntypedArray>() {
         use numpy::PyUntypedArrayMethods;
         if !accepted(arr.shape()) {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -136,7 +137,7 @@ fn to_f64_matrix<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Array2<f64>> {
         ));
     }
     check_ndim(obj, 2, |s| s.len() <= 2)?;
-    if let Ok(arr) = obj.downcast::<numpy::PyUntypedArray>() {
+    if let Ok(arr) = obj.cast::<numpy::PyUntypedArray>() {
         use numpy::PyUntypedArrayMethods;
         check_alloc(arr.shape(), 8, "float64")?;
     }
@@ -242,7 +243,7 @@ fn to_f64_vector<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Array1<f64>> {
 /// An int32/int64 numpy matrix as a row-major i32 array (chromosome values are small), or None for
 /// any other input.
 pub fn to_i32_array2(obj: &Bound<'_, PyAny>) -> Option<Array2<i32>> {
-    if let Ok(arr) = obj.downcast::<numpy::PyUntypedArray>() {
+    if let Ok(arr) = obj.cast::<numpy::PyUntypedArray>() {
         use numpy::PyUntypedArrayMethods;
         // too big to copy: let the f64 conversion raise the error
         if check_alloc(arr.shape(), 8, "float64").is_err() {
@@ -345,7 +346,7 @@ pub fn is_integer_like(obj: &Bound<'_, PyAny>) -> bool {
 
 /// Return a chromosome matrix, as int32 when it holds integers: geatpy 2.7.0 returns int32 for every
 /// integer chromosome (crossovers and mutations of integer input, 'P' and 'BG' operators, decoders).
-pub fn chrom_out(py: Python<'_>, chrom: Array2<f64>, as_int: bool) -> PyResult<PyObject> {
+pub fn chrom_out(py: Python<'_>, chrom: Array2<f64>, as_int: bool) -> PyResult<Py<PyAny>> {
     use numpy::IntoPyArray;
     if as_int {
         Ok(chrom
@@ -371,7 +372,7 @@ pub fn check_prob(p: f64, op: &str, msg: &str) -> PyResult<f64> {
 
 /// Output of an 'RI' operator: like geatpy 2.7.0, an int32 matrix when every variable is an integer
 /// (varTypes all 1), a float64 matrix otherwise.
-pub fn ri_out(py: Python<'_>, chrom: Array2<f64>, discrete: &[bool]) -> PyResult<PyObject> {
+pub fn ri_out(py: Python<'_>, chrom: Array2<f64>, discrete: &[bool]) -> PyResult<Py<PyAny>> {
     use numpy::IntoPyArray;
     if !discrete.is_empty() && discrete.iter().all(|&d| d) {
         Ok(chrom

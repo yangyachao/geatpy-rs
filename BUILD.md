@@ -74,6 +74,9 @@ pip install .
 - `dist/geatpy_rs-2.8.0b1.tar.gz`：通用的源码分发包 (sdist)。
 
 > **特性说明**：由于开启了 Python **abi3-py38** 特性，编译出的单个二进制 Wheel 可直接在 **Python 3.8、3.9、3.10、3.11、3.12、3.13、3.14、3.15** 下直接加载运行，无需针对每个 Python 小版本分别编译。
+>
+> free-threaded（无 GIL）的 CPython 没有稳定 ABI：用 3.14t 解释器构建时（如 `python3.14t scripts/build.py`），PyO3 会给出
+> “abi3 does not yet support CPython 3.14t” 的警告并改为构建该版本专用的 `cp314t` Wheel，属正常现象。
 
 发布到 PyPI：
 ```bash

@@ -42,11 +42,11 @@ platform that work on Python 3.8 – 3.15.
 | Aspect | Original Geatpy | Geatpy Rust Core Edition |
 | :--- | :--- | :--- |
 | **Core implementation** | Compiled binary extension; core source not published | **Pure Rust** (`crates/geatpy_core`), open source |
-| **Python versions** | Python 3.5 – 3.10 only | **Python 3.8 – 3.15** |
-| **ABI** | One build per Python minor version | **PyO3 `abi3`: a single build for every Python 3.8+** |
+| **Python versions** | Python 3.5 – 3.10 only | **Python 3.8 – 3.15**, plus wheels for free-threaded (no-GIL) Python 3.14t |
+| **ABI** | One build per Python minor version | **PyO3 `abi3`: a single build for every Python 3.8+** (free-threaded Python has no stable ABI and gets its own build) |
 | **Prebuilt wheels** | Windows x86/x64, Linux x86_64, macOS (Apple Silicon only for Python 3.8 – 3.10); no Linux ARM64 | **Linux x86_64/ARM64, macOS Universal2, Windows x64** |
 | **Memory safety** | Edge-case input can segfault and kill the Python process | **Safe Rust (the one `unsafe` call runs the FMA-instruction dot product after checking that the CPU has FMA); empty, reversed, oversized and other edge-case input raises a Python exception instead of crashing** |
-| **Parallelism & speed** | C OpenMP | Non-dominated sorting, reference-point selection, distances and the GD/IGD/Spacing indicators use several threads on large inputs (bit-identical to one thread; set the count with `ea.set_num_threads()` / `GEATPY_NUM_THREADS`), the other operators run on one thread (the `Parallel` argument is accepted for compatibility but has no effect); 0.05 – 0.76× the original's runtime on 36 benchmark cases |
+| **Parallelism & speed** | C OpenMP | Non-dominated sorting, reference-point selection, distances and the GD/IGD/Spacing indicators use several threads on large inputs (bit-identical to one thread; set the count with `ea.set_num_threads()` / `GEATPY_NUM_THREADS`), the other operators run on one thread (the `Parallel` argument is accepted for compatibility but has no effect); 0.05 – 0.76× the original's runtime on 36 benchmark cases; on free-threaded Python 3.14t several templates can run at once in threads (see the FAQ) |
 | **API compatibility** | Reference | **Same Python API, data structures and 42 algorithm templates; core behaviour verified against the official 2.7.0 binaries (see below)** |
 
 > **Threads**: the default is the number of logical CPUs (a larger setting is capped at it). When several geatpy
@@ -56,6 +56,28 @@ platform that work on Python 3.8 – 3.15.
 > `ulimit -v` use one thread or set `MALLOC_ARENA_MAX=1`. "Bit-identical to one thread" assumes the default
 > floating-point environment: if another library turns on flush-to-zero (e.g. `torch.set_flush_denormal(True)`),
 > input with subnormal numbers may give different results on several threads.
+
+### Large problems (100 000 variables)
+
+Seconds per generation and peak process memory (Apple M2 Pro; the objectives are numpy-vectorised Sphere, ZDT1 and a
+0-1 knapsack and take almost no time; mean over 20 generations, 10 for NSGA2, median of 3 runs; script
+`scripts/parity/large_scale.py`):
+
+| Template and problem | Official 2.7.0 | geatpy-rs 2.7.5 | This version |
+| :--- | :--- | :--- | :--- |
+| DE/rand/1/bin, Sphere, 50 individuals | 87.4 ms, 1028 MB | 43.4 ms, 825 MB | **29.7 ms, 824 MB** |
+| DE/best/1/L, Sphere, 50 individuals | 70.6 ms, 1027 MB | 37.6 ms, 825 MB | **23.6 ms, 824 MB** |
+| SEGA, real-valued, Sphere, 50 individuals | 69.5 ms, 800 MB | 34.4 ms, 482 MB | **26.9 ms, 482 MB** |
+| EGA, real-valued, Sphere, 50 individuals | 61.1 ms, 496 MB | 30.3 ms, 447 MB | **23.0 ms, 445 MB** |
+| SEGA, binary, 0-1 knapsack, 50 individuals | 94.8 ms, 633 MB | 33.1 ms, 408 MB | **25.3 ms, 406 MB** |
+| NSGA2, ZDT1, 100 individuals | 254 ms, 1480 MB | 138 ms, 1166 MB | **118 ms, 1166 MB** |
+| SEGA, binary, 0-1 knapsack, **500 000 variables** | 442 ms, 2621 MB | 164 ms, 1744 MB | **125 ms, 1744 MB** |
+
+With the same seed 2.7.5 and this version give the same results. At 100 000 variables a generation takes tens of
+milliseconds, so neither speed nor memory is the bottleneck; that evolutionary algorithms hardly converge at this scale
+([#281](https://github.com/geatpy-dev/geatpy/issues/281), [#295](https://github.com/geatpy-dev/geatpy/issues/295))
+is a limit of the algorithms themselves, which needs the problem's structure (variable grouping, dimension reduction,
+problem-specific operators) or a classical optimisation method.
 
 ---
 
@@ -126,6 +148,8 @@ pip install geatpy-rs
 ```
 
 > 💡 **Note**: the distribution is named `geatpy-rs`, but nothing changes in your code: keep using **`import geatpy as ea`**.
+>
+> On free-threaded (no-GIL) Python 3.14t, `pip install geatpy-rs` works the same way and picks the `cp314t` wheel.
 
 > 🧪 **Preview**: 2.8.0b1 is the multithreading preview (no GPU support). `pip install` still installs the 2.7.5 stable
 > release; add `--pre` to try it: `pip install --pre geatpy-rs`.
@@ -353,6 +377,38 @@ de = ea.soea_DE_rand_1_bin_templet(problem, ea.Population('RI', NIND=50), MAXGEN
 de.mutOper.F = 0.7            # DE scale factor
 de.recOper.XOVR = 0.9         # DE crossover probability
 ```
+
+### Can I run several templates at once in threads, or evaluate the objective in parallel?
+
+On free-threaded (no-GIL) Python 3.14t, yes: the core does not need the GIL, so threads can run templates of their own
+at the same time, or `evalVars` can compute the objective in chunks on a thread pool without copying data as
+`multiprocessing` does.
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+import geatpy as ea
+
+def solve(_):
+    problem = ea.benchmarks.Rastrigrin(30)
+    algorithm = ea.soea_DE_rand_1_bin_templet(problem, ea.Population('RI', NIND=50), MAXGEN=500, logTras=0)
+    res = ea.optimize(algorithm, verbose=False, drawing=0, outputMsg=False, drawLog=False, saveFlag=False)
+    return res['ObjV'][0][0]
+
+with ThreadPoolExecutor(8) as pool:
+    best = list(pool.map(solve, range(8)))  # 8 runs at the same time
+```
+
+Measured on an Apple M2 Pro with 8 threads: 8 independent runs are 4.4 times faster for the DE template and 3.8 times
+for SEGA with an objective written in plain Python; one run whose `evalVars` computes a plain-Python objective in
+chunks (400 individuals × 1000 variables) is 1.9 times faster overall (the rest is operators and data conversion). On
+regular Python (with the GIL) threads give no speed-up. Note:
+
+- the threads share numpy's global random state, so `seed` does not make runs in parallel threads reproducible;
+- the core's own threads (see "Threads" above) compete with yours for the cores: call `ea.set_num_threads(1)` before
+  running several templates at once;
+- an objective that calls numpy functions on single numbers (such as `np.cos` on a Python float) makes the threads
+  contend, and gets slower with more threads (0.6 times the single-thread speed with 8 threads); use the `math` module,
+  or call numpy on whole arrays.
 
 ### Other
 

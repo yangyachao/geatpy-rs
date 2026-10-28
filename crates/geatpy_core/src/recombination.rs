@@ -497,8 +497,8 @@ fn copy_crossover<'py>(
     pc: f64,
     half_n: Opt,
     gene_id: Opt,
-) -> PyResult<PyObject> {
-    if let Ok(list) = old.downcast::<PyList>() {
+) -> PyResult<Py<PyAny>> {
+    if let Ok(list) = old.cast::<PyList>() {
         let mats: Vec<(Array2<f64>, bool)> = list
             .iter()
             .map(|m| Ok((to_f64_array2(&m)?, is_integer_like(&m))))
@@ -587,7 +587,7 @@ macro_rules! copy_operator {
             half_n: Opt<'_, 'py>,
             gene_id: Opt<'_, 'py>,
             parallel: Opt<'_, 'py>,
-        ) -> PyResult<PyObject> {
+        ) -> PyResult<Py<PyAny>> {
             let _ = parallel;
             let name = stringify!($name);
             copy_crossover(
@@ -651,7 +651,7 @@ pub fn recdis<'py>(
     half_n: Opt<'_, 'py>,
     gene_id: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     copy_crossover(
         py,
@@ -712,7 +712,7 @@ fn real_recombination<'py, F, G>(
     half_n: Opt,
     mut pair: F,
     mut global: G,
-) -> PyResult<PyObject>
+) -> PyResult<Py<PyAny>>
 where
     F: FnMut(usize, &[f64], &[f64], &mut [f64], &mut [f64], &mut rand::rngs::SmallRng),
     G: FnMut(usize, usize, usize, f64, f64, &mut rand::rngs::SmallRng) -> f64,
@@ -787,7 +787,7 @@ pub fn recsbx<'py>(
     half_n: Opt<'_, 'py>,
     n: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     let chrom = F64Rows::new(old_chrom)?;
     let eta = non_negative(n, chrom.dim().1, 20.0, "recsbx", "n")?;
@@ -844,7 +844,7 @@ fn parse_alpha(alpha: Opt, name: &str, n: usize, l: usize, per_gene: bool) -> Py
     let Some(a) = alpha.filter(|a| !a.is_none()) else {
         return Ok(Alpha::Random);
     };
-    let Ok(arr) = a.downcast::<numpy::PyUntypedArray>() else {
+    let Ok(arr) = a.cast::<numpy::PyUntypedArray>() else {
         let v: f64 = a.extract().map_err(|_| shape_err())?;
         if v < -0.25 || v > 1.25 {
             return Err(err(&format!(
@@ -887,7 +887,7 @@ fn intermediate<'py>(
     half_n: Opt,
     alpha: Opt,
     per_gene: bool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     // geatpy 2.7.0 checks RecOpt and Half_N before the chromosome and Alpha
     let pc = prob(rec_opt, 0.7, name)?;
     pairing(half_n, usize::MAX, name)?;
@@ -963,7 +963,7 @@ pub fn recint<'py>(
     half_n: Opt<'_, 'py>,
     alpha: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     intermediate(py, "recint", old_chrom, rec_opt, half_n, alpha, true)
 }
@@ -978,7 +978,7 @@ pub fn reclin<'py>(
     half_n: Opt<'_, 'py>,
     alpha: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     intermediate(py, "reclin", old_chrom, rec_opt, half_n, alpha, false)
 }
@@ -998,7 +998,7 @@ pub fn recndx<'py>(
     half_n: Opt<'_, 'py>,
     a: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     let chrom = F64Rows::new(old_chrom)?;
     let aa = non_negative(a, chrom.dim().1, 1.4826, "recndx", "A")?;
@@ -1285,7 +1285,7 @@ fn permutation_crossover<'py>(
     half_n: Opt,
     pair_gate: bool,
     op: PermOp,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let as_int = is_integer_like(old);
     if as_int {
         if let Some(chrom) = crate::utils::to_i32_array2(old) {
@@ -1329,7 +1329,7 @@ pub fn xovpmx<'py>(
     half_n: Opt<'_, 'py>,
     method: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = parallel;
     let method = crate::utils::opt_int(method, 1)?;
     if method != 1 && method != 2 {
@@ -1362,7 +1362,7 @@ pub fn xovox<'py>(
     half_n: Opt<'_, 'py>,
     parallel: Opt<'_, 'py>,
     params4: Opt<'_, 'py>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = (parallel, params4);
     permutation_crossover(
         py,
@@ -1384,7 +1384,7 @@ pub fn recombin<'py>(
     rec_f: &str,
     args: &Bound<'py, PyTuple>,
     kwargs: Option<&Bound<'py, PyDict>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let name = rec_f.to_lowercase();
     let allowed = [
         "recsbx", "recdis", "recint", "reclin", "recndx", "xovsp", "xovdp", "xovud", "xovsh",
