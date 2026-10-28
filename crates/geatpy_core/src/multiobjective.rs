@@ -289,6 +289,42 @@ fn numpy_unique_rows(py: Python<'_>, obj: &[Vec<f64>]) -> PyResult<UniqueRows> {
     Ok((uni.iter().cloned().collect(), counts, inverse))
 }
 
+/// Front members `front_dominates` compares with a candidate at once.
+const FRONT_BLOCK: usize = 64;
+
+/// Whether a member of a front weakly dominates `x`; `cols` holds the members' objectives by column,
+/// oldest first. The latest member is tested alone first (with many fronts it usually settles it),
+/// then blocks of the latest members, every member of a block on every objective: no early exit,
+/// which the branch predictor cannot follow, so the loops vectorise.
+fn front_dominates(cols: &[Vec<f64>], x: &[f64]) -> bool {
+    let len = cols.first().map_or(0, Vec::len);
+    if len == 0 {
+        return false;
+    }
+    if cols.iter().zip(x).all(|(c, &b)| c[len - 1] <= b) {
+        return true;
+    }
+    let mut hit = [false; FRONT_BLOCK];
+    let mut end = len - 1;
+    while end > 0 {
+        let start = end.saturating_sub(FRONT_BLOCK);
+        let hit = &mut hit[..end - start];
+        for (h, &a) in hit.iter_mut().zip(&cols[0][start..end]) {
+            *h = a <= x[0];
+        }
+        for (col, &b) in cols.iter().zip(x).skip(1) {
+            for (h, &a) in hit.iter_mut().zip(&col[start..end]) {
+                *h &= a <= b;
+            }
+        }
+        if hit.iter().any(|&h| h) {
+            return true;
+        }
+        end = start;
+    }
+    false
+}
+
 /// Efficient non-dominated sort, one complete front per pass. `pts` holds objectives 2..M (`w` of
 /// them) of the unique rows sorted lexicographically, `rep` their multiplicities. Returns the level
 /// of every unique row (0 = unranked) and the last level visited. NaN-free input only.
@@ -299,9 +335,6 @@ fn numpy_unique_rows(py: Python<'_>, obj: &[Vec<f64>]) -> PyResult<UniqueRows> {
 /// chains of fronts (such as infeasible rows penalised by their violation) linear per pass. With
 /// two objectives (`w` = 1) the second objective strictly decreases along a front, so only its
 /// last member needs checking.
-/// Front members compared with a candidate at once by `front_levels`.
-const FRONT_BLOCK: usize = 64;
-
 fn front_levels(
     pts: &[f64],
     w: usize,
@@ -320,9 +353,8 @@ fn front_levels(
         return (lv, cri_level);
     }
     let mut front: Vec<usize> = Vec::new();
-    // the front's objectives stored by column, for blocks of comparisons without branches
+    // the front's objectives by column, for `front_dominates`
     let mut cols: Vec<Vec<f64>> = vec![Vec::new(); w];
-    let mut hit = [false; FRONT_BLOCK];
     loop {
         cri_level += 1;
         if cri_level > max_level {
@@ -334,40 +366,16 @@ fn front_levels(
             if l != 0 {
                 continue;
             }
-            let open = if w == 1 {
-                front.last().is_none_or(|&j| !dominates(j, i))
-            } else if w == 0 {
+            let open = match w {
                 // one objective: every earlier member (weakly) dominates
-                front.is_empty()
-            } else {
-                // blocks of the latest members first; within a block every member is tested on
-                // every objective (no early exit, which the branch predictor cannot follow)
-                // the latest member alone first: with many fronts it usually settles it
-                let x = row(i);
-                let mut dominated = front.last().is_some_and(|&j| dominates(j, i));
-                let mut end = front.len().saturating_sub(1);
-                while end > 0 && !dominated {
-                    let start = end.saturating_sub(FRONT_BLOCK);
-                    let hit = &mut hit[..end - start];
-                    for (h, &a) in hit.iter_mut().zip(&cols[0][start..end]) {
-                        *h = a <= x[0];
-                    }
-                    for (col, &b) in cols.iter().zip(x).skip(1) {
-                        for (h, &a) in hit.iter_mut().zip(&col[start..end]) {
-                            *h &= a <= b;
-                        }
-                    }
-                    dominated = hit.iter().any(|&h| h);
-                    end = start;
-                }
-                !dominated
+                0 => front.is_empty(),
+                1 => front.last().is_none_or(|&j| !dominates(j, i)),
+                _ => !front_dominates(&cols, row(i)),
             };
             if open {
                 front.push(i);
-                if w > 1 {
-                    for (col, &v) in cols.iter_mut().zip(row(i)) {
-                        col.push(v);
-                    }
+                for (col, &v) in cols.iter_mut().zip(row(i)) {
+                    col.push(v);
                 }
             }
         }
