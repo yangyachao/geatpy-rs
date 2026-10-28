@@ -184,8 +184,7 @@ Population : class - 种群类
                     'error in Population: index must be an integer, a 1-D list, or a 1-D array. ('
                     'index必须是一个整数，一维的列表或者一维的向量。)')
         if isinstance(index, slice):
-            NIND = (index.stop - (index.start if index.start is not None else 0)) // (
-                index.step if index.step is not None else 1)
+            NIND = len(range(*index.indices(self.sizes)))  # 与切片实际选中的个体数一致（含负数、省略与越界的端点）
             index_array = index
         else:
             index_array = np.array(index).reshape(-1)
@@ -283,7 +282,8 @@ Population : class - 种群类
             if pop.Phen is None:
                 raise RuntimeError('error in Population: Phen disagree. (两者的表现型矩阵必须要么同时为None要么同时不为None。)')
             self.Phen[index_array] = pop.Phen
-        self.sizes = self.Phen.shape[0]  # 更新种群规模
+        if self.Phen is not None:
+            self.sizes = self.Phen.shape[0]  # 更新种群规模（个体替换不改变规模；Phen为None时保持不变）
 
     def __add__(self, pop):
 

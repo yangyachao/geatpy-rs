@@ -139,8 +139,12 @@ fn sus_idx(fit: &[f64], nsel: usize) -> Vec<usize> {
     let n = fit.len();
     let mut rng = crate::utils::rng();
     let (cum, total) = cumulative(fit);
-    if n == 0 || nsel == 0 {
+    if nsel == 0 {
         return vec![];
+    }
+    if n == 0 {
+        // geatpy 2.7.0 returns zeros for an empty population (like rws)
+        return vec![0; nsel];
     }
     if total <= 0.0 {
         return (0..nsel).map(|_| rng.gen_range(0..n)).collect();
@@ -156,19 +160,26 @@ fn sus_idx(fit: &[f64], nsel: usize) -> Vec<usize> {
         .collect()
 }
 
-fn urs_idx(n: usize, nsel: usize) -> Vec<usize> {
+fn urs_idx(n: usize, nsel: usize) -> PyResult<Vec<usize>> {
     let mut rng = crate::utils::rng();
     if n == 0 {
-        return vec![];
+        // geatpy 2.7.0 calls np.random.randint(0, 0, ...)
+        return Err(pyo3::exceptions::PyValueError::new_err("high <= 0"));
     }
-    (0..nsel).map(|_| rng.gen_range(0..n)).collect()
+    Ok((0..nsel).map(|_| rng.gen_range(0..n)).collect())
 }
 
-fn rps_idx(n: usize, nsel: usize) -> Vec<usize> {
+/// Nsel distinct indices of a random permutation; geatpy 2.7.0 requires 1 <= Nsel <= N.
+fn rps_idx(n: usize, nsel: usize) -> PyResult<Vec<usize>> {
+    if nsel == 0 || nsel > n {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "error in rps: Nsel must be an integer bigger than 0 and not bigger than N. (Nsel必须是一个大于0且不大于N的正整数。)",
+        ));
+    }
     let mut v: Vec<usize> = (0..n).collect();
     v.shuffle(&mut crate::utils::rng());
-    v.truncate(nsel.min(n));
-    v
+    v.truncate(nsel);
+    Ok(v)
 }
 
 fn rcs_idx(n: usize) -> Vec<usize> {
@@ -233,10 +244,10 @@ fn select_by_name(name: &str, fit: &[f64], nsel: usize, tour: usize) -> PyResult
         "tour" => tour_idx(fit, nsel, tour, false),
         "otos" => otos_idx(fit, nsel)?,
         "rcs" => rcs_idx(fit.len()),
-        "rps" => rps_idx(fit.len(), nsel),
+        "rps" => rps_idx(fit.len(), nsel)?,
         "rws" => rws_idx(fit, nsel),
         "sus" => sus_idx(fit, nsel),
-        "urs" => urs_idx(fit.len(), nsel),
+        "urs" => urs_idx(fit.len(), nsel)?,
         other => {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
                 "error in selecting: unknown selection operator '{}'.",
@@ -354,7 +365,7 @@ pub fn urs<'py>(
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let _ = (params2, params3);
     crate::utils::check_alloc(&[nsel], 8, "int64")?;
-    Ok(idx_out64(py, urs_idx(fitness_or_n(fitn_v_n)?.len(), nsel)))
+    Ok(idx_out64(py, urs_idx(fitness_or_n(fitn_v_n)?.len(), nsel)?))
 }
 
 /// Random compensation selection: r0 = (i + rg) % N with one random rg in [1, N).
@@ -387,12 +398,7 @@ pub fn rps<'py>(
         Some(o) if !o.is_none() => o.extract::<usize>()?,
         _ => n,
     };
-    if k > n {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "error in rps: Nsel must not exceed the population size.",
-        ));
-    }
-    Ok(idx_out(py, rps_idx(n, k)))
+    Ok(idx_out(py, rps_idx(n, k)?))
 }
 
 /// One-to-one survivor selection.
@@ -430,6 +436,13 @@ pub fn selecting<'py>(
 ) -> PyResult<PyObject> {
     let _ = parallel;
     let fit = fitness_or_n(fitn_v_n)?;
+    if let Some(o) = nsel.filter(|o| !o.is_none()) {
+        if o.extract::<f64>()? <= 0.0 {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "error in selecting: NSel must be bigger than 0. (待选择的个体数NSel必须不小于0。)",
+            ));
+        }
+    }
     let k = sel_count(nsel, fit.len())?;
     let tour = match params2 {
         Some(p) if !p.is_none() && matches!(sel_f, "tour" | "etour") => p.extract::<usize>()?,
@@ -459,6 +472,12 @@ pub fn mselecting<'py>(
         .try_iter()?
         .map(|f| fitness_or_n(&f?))
         .collect::<PyResult<_>>()?;
+    if fits.is_empty() {
+        // geatpy 2.7.0 concatenates the FitnVs with numpy first
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "need at least one array to concatenate",
+        ));
+    }
     let sizes: Vec<usize> = fits.iter().map(|f| f.len()).collect();
     let total: usize = sizes.iter().sum();
     let msel = msel.unwrap_or(0.1);
@@ -564,6 +583,39 @@ fn nonlinear_root(sp: f64, n: usize) -> f64 {
     0.5 * (lo + hi)
 }
 
+/// `nonlinear_root` and the fitness of rank p computed from powers of 1/x (every term divided by
+/// x^(N-1)), which cannot overflow: the direct form reaches x^(N-1) = inf once N and SP are large
+/// (N = 500, SP = 400 has x near 5), where geatpy 2.7.0 returns NaN.
+fn nonlinear_fitness_scaled(sp: f64, n: usize, pos: &[usize]) -> Vec<f64> {
+    // g(x) = f(x) / x^(N-1) = (SP - N) + SP * sum_{k=1}^{N-1} x^-k, decreasing in x
+    let g = |x: f64| {
+        let inv = 1.0 / x;
+        let (mut term, mut sum) = (1.0, 0.0);
+        for _ in 1..n {
+            term *= inv;
+            sum += term;
+        }
+        (sp - n as f64) + sp * sum
+    };
+    let (mut lo, mut hi) = (1.0, 2.0);
+    while g(hi) > 0.0 && hi < 1e6 {
+        hi *= 2.0;
+    }
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if g(mid) > 0.0 {
+            lo = mid
+        } else {
+            hi = mid
+        }
+    }
+    let x = 0.5 * (lo + hi);
+    let denom: f64 = (0..n).map(|k| x.powi(-(k as i32))).fold(0.0, |s, v| s + v);
+    pos.iter()
+        .map(|&p| n as f64 * x.powi(p as i32 - (n as i32 - 1)) / denom)
+        .collect()
+}
+
 /// Rank-based fitness. Ties share the rank of the worst member of the tie group.
 #[pyfunction]
 #[pyo3(signature = (obj_v, cv=None, maxormins=None, rm=None, sp=None, mask=None))]
@@ -572,10 +624,18 @@ pub fn ranking<'py>(
     obj_v: &Bound<'py, PyAny>,
     cv: Opt<'_, 'py>,
     maxormins: Opt<'_, 'py>,
-    rm: Option<i64>,
+    rm: Opt<'_, 'py>,
     sp: Option<f64>,
     mask: Opt<'_, 'py>,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    // RM is compared as a number (1.0 and True are 1); anything else is refused below
+    let rm: Option<i64> = match rm.filter(|o| !o.is_none()) {
+        None => None,
+        Some(o) => match o.extract::<f64>() {
+            Ok(v) if v == 0.0 || v == 1.0 => Some(v as i64),
+            _ => Some(-1),
+        },
+    };
     let f = prepared_column(
         obj_v,
         cv,
@@ -597,10 +657,19 @@ pub fn ranking<'py>(
             return Err(runtime_err("error in ranking: SP must be in [1,Nind] when PM = 1, Nind is the number of individuals. (当PM为1时，SP必须在[1,Nind]范围内，Nind为种群规模，详见ranking帮助文档。)"));
         }
     }
-    // position counted from the worst individual (0) to the best (n - 1)
+    // position counted from the worst individual (0) to the best (n - 1): the number of values
+    // greater than x (none for NaN, and NaN is greater than nothing), found in a sorted copy
+    let mut sorted: Vec<f64> = f.iter().copied().filter(|v| !v.is_nan()).collect();
+    sorted.sort_by(|a, b| crate::utils::cmp_nan_last(*a, *b));
     let pos: Vec<usize> = f
         .iter()
-        .map(|&x| f.iter().filter(|&&y| y > x).count())
+        .map(|&x| {
+            if x.is_nan() {
+                0
+            } else {
+                sorted.len() - sorted.partition_point(|&y| y <= x)
+            }
+        })
         .collect();
     let fit: Vec<f64> = if let Some(m) = mask.filter(|m| !m.is_none()) {
         let m = crate::utils::to_f64_array1(m)?;
@@ -616,9 +685,15 @@ pub fn ranking<'py>(
         let sp = sp.unwrap_or(2.0);
         let x = nonlinear_root(sp, n);
         let denom: f64 = (0..n).map(|i| x.powi(i as i32)).fold(0.0, |s, x| s + x);
-        pos.iter()
+        let fit: Vec<f64> = pos
+            .iter()
             .map(|&p| n as f64 * x.powi(p as i32) / denom)
-            .collect()
+            .collect();
+        if fit.iter().all(|v| v.is_finite()) {
+            fit
+        } else {
+            nonlinear_fitness_scaled(sp, n, &pos)
+        }
     } else {
         let sp = sp.unwrap_or(2.0);
         pos.iter()

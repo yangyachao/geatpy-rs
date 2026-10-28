@@ -859,13 +859,15 @@ pub fn mergecv<'py>(
 }
 
 /// Pairs every row of ObjV with its weight vector; a single ObjV row is broadcast over all weights.
-fn decomposition_rows(n_obj: usize, n_w: usize) -> PyResult<usize> {
-    if n_obj == n_w || n_obj == 1 {
+/// The weights must have one column per objective (geatpy 2.7.0's message for either mismatch).
+fn decomposition_rows(obj: &Array2<f64>, w: &Array2<f64>, name: &str) -> PyResult<usize> {
+    let (n_obj, n_w) = (obj.shape()[0], w.shape()[0]);
+    if (n_obj == n_w || n_obj == 1) && w.shape()[1] == obj.shape()[1] {
         Ok(n_w)
     } else {
-        Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "error: The number of rows of weights must equal that of ObjV (or ObjV must have one row).",
-        ))
+        Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "error in {name}: weights and ObjV disagree. (weights和ObjV不匹配，详见help()帮助文档。)"
+        )))
     }
 }
 
@@ -902,7 +904,7 @@ pub fn tcheby<'py>(
     let _ = parallel;
     let obj = crate::utils::prepared_objectives(obj_v, cv, maxormins, "tcheby")?;
     let w = crate::utils::to_f64_array2(weights)?;
-    let rows = decomposition_rows(obj.shape()[0], w.shape()[0])?;
+    let rows = decomposition_rows(&obj, &w, "tcheby")?;
     let z = ideal_or_min(&obj, ideal_point)?;
     let m = obj.shape()[1];
     let mut out = Array2::<f64>::zeros((rows, 1));
@@ -933,7 +935,7 @@ pub fn pbi<'py>(
     let theta = theta.unwrap_or(5.0);
     let obj = crate::utils::prepared_objectives(obj_v, cv, maxormins, "pbi")?;
     let w = crate::utils::to_f64_array2(weights)?;
-    let rows = decomposition_rows(obj.shape()[0], w.shape()[0])?;
+    let rows = decomposition_rows(&obj, &w, "pbi")?;
     let z = ideal_or_min(&obj, ideal_point)?;
     let m = obj.shape()[1];
     let mut out = Array2::<f64>::zeros((rows, 1));
@@ -1657,17 +1659,42 @@ pub fn migrate<'py>(
             msg
         )));
     }
+    // the index lists below hold every individual
+    let total = pop_sizes
+        .iter()
+        .try_fold(0usize, |t, &s| t.checked_add(s))
+        .unwrap_or(usize::MAX);
+    crate::utils::check_alloc(&[total], 8, "int64")?;
+    // FitnVs is read only when fitness is used, like geatpy 2.7.0 (which ignores it otherwise)
+    let needs_fitness = select == 1 || replacement == 2;
     let fits: Option<Vec<Vec<f64>>> = match fitn_vs {
-        Some(f) if !f.is_none() => Some(
-            f.try_iter()?
-                .map(|x| Ok(crate::utils::to_f64_array2(&x?)?.column(0).to_vec()))
-                .collect::<PyResult<_>>()?,
-        ),
+        Some(f) if needs_fitness && !f.is_none() => {
+            let fits: Vec<Vec<f64>> = f
+                .try_iter()?
+                .map(|x| {
+                    let m = crate::utils::to_f64_array2(&x?)?;
+                    if m.ncols() == 0 {
+                        // numpy's message for FitnV[:, 0] on an empty column set
+                        return Err(pyo3::exceptions::PyIndexError::new_err(
+                            "index 0 is out of bounds for axis 0 with size 0",
+                        ));
+                    }
+                    Ok(m.column(0).to_vec())
+                })
+                .collect::<PyResult<_>>()?;
+            // geatpy 2.7.0 reads past the end of a missing or short FitnV
+            if fits.len() < p || fits.iter().zip(&pop_sizes).any(|(f, &s)| f.len() < s) {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "error in migrate: FitnVs and PopSizes disagree. (FitnVs与PopSizes不匹配：每个种群都需要一个至少有PopSizes[i]行的FitnV。)",
+                ));
+            }
+            Some(fits)
+        }
         _ => None,
     };
-    if (select == 1 || replacement == 2) && fits.is_none() {
+    if needs_fitness && fits.is_none() {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "error in migrate: FitnVs is required when Select=1 or Replacement=2. (此时必须传入FitnVs。)",
+            "error in migrate: FitnVs must not be None when Select=1 or Replacement=2 . (当Select=1或Replacement=2时，必须传入FitnVs参数。)",
         ));
     }
     let mut rng = crate::utils::rng();
