@@ -605,29 +605,33 @@ pub fn cdist<'py>(
     };
     crate::utils::check_alloc(&[na, nb], 8, "float64")?;
     let mut out = Array2::<f64>::zeros((na, nb));
+    // Row i of the result accumulates term(a[i, k], b[j, k]) over k = 0, 1, ... for all j at once
+    // from a column-major copy of B, so the loop over j vectorises; every entry is still the sum
+    // from 0.0 in order of k.
+    let rows =
+        |a: &Array2<f64>, b: &Array2<f64>, out: &mut Array2<f64>, term: fn(f64, f64) -> f64| {
+            let bt = crate::utils::transpose(b);
+            let fa = a.as_slice().expect("converted arrays are row-major");
+            let fo = out.as_slice_mut().expect("fresh arrays are row-major");
+            for (i, row) in fo.chunks_exact_mut(nb.max(1)).enumerate().take(na) {
+                for (k, col) in bt.chunks_exact(nb.max(1)).enumerate().take(dim) {
+                    let x = fa[i * dim + k];
+                    for (o, &y) in row.iter_mut().zip(col) {
+                        *o += term(x, y);
+                    }
+                }
+            }
+        };
     match metric {
         "euclidean" => {
-            for i in 0..na {
-                for j in 0..nb {
-                    out[[i, j]] = (0..dim).map(|k| (arr_a[[i, k]] - arr_b[[j, k]]).powi(2)).fold(0.0, |s, x| s + x).sqrt();
-                }
-            }
+            rows(&arr_a, &arr_b, &mut out, |x, y| (x - y) * (x - y));
+            out.mapv_inplace(f64::sqrt);
         }
-        "cityblock" => {
-            for i in 0..na {
-                for j in 0..nb {
-                    out[[i, j]] = (0..dim).map(|k| (arr_a[[i, k]] - arr_b[[j, k]]).abs()).fold(0.0, |s, x| s + x);
-                }
-            }
-        }
+        "cityblock" => rows(&arr_a, &arr_b, &mut out, |x, y| (x - y).abs()),
         "cosine" | "cosine_similarity" => {
-            let (ua, ub) = (unit(&arr_a), unit(&arr_b));
-            let similarity = metric == "cosine_similarity";
-            for i in 0..na {
-                for j in 0..nb {
-                    let dot: f64 = (0..dim).map(|k| ua[[i, k]] * ub[[j, k]]).fold(0.0, |s, x| s + x);
-                    out[[i, j]] = if similarity { dot } else { 1.0 - dot };
-                }
+            rows(&unit(&arr_a), &unit(&arr_b), &mut out, |x, y| x * y);
+            if metric == "cosine" {
+                out.mapv_inplace(|dot| 1.0 - dot);
             }
         }
         other => {

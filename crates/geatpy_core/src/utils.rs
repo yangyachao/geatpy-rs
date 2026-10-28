@@ -258,6 +258,11 @@ pub fn to_i32_array2(obj: &Bound<'_, PyAny>) -> Option<Array2<i32>> {
     None
 }
 
+/// Column-major copy of a matrix (its transpose, row-major), for loops that run down a column.
+pub fn transpose(a: &Array2<f64>) -> Vec<f64> {
+    a.t().iter().copied().collect()
+}
+
 /// numpy's sort order for floats (`np.sort`, `np.argsort`): NaN after every number, NaNs equal to
 /// each other. Unlike `partial_cmp(..).unwrap_or(Equal)` this is a total order, so `sort_by` never
 /// panics on NaN; for NaN-free input it agrees with `partial_cmp`.

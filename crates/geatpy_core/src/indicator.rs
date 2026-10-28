@@ -110,19 +110,26 @@ pub fn Spacing<'py>(
             "zero-size array to reduction operation minimum which has no identity",
         ));
     }
-    // np.min over each row of the distance matrix with an infinite diagonal (NaN propagates)
+    // np.min over each row of the distance matrix with an infinite diagonal (NaN propagates); a row
+    // of L1 distances is accumulated for all k at once from a column-major copy, so the loop over k
+    // vectorises (every distance is still the sum from 0.0 in order of j)
+    let pt = crate::utils::transpose(&p);
+    let mut row = vec![0.0; n];
     let d: Vec<f64> = (0..n)
         .map(|i| {
-            (0..n)
-                .filter(|&k| k != i)
-                .map(|k| (0..m).fold(0.0, |s, j| s + (p[[i, j]] - p[[k, j]]).abs()))
-                .fold(f64::INFINITY, |mn, x| {
-                    if x.is_nan() || mn.is_nan() {
-                        f64::NAN
-                    } else {
-                        mn.min(x)
-                    }
-                })
+            row.fill(0.0);
+            for (j, col) in pt.chunks_exact(n).enumerate().take(m) {
+                let x = p[[i, j]];
+                for (o, &y) in row.iter_mut().zip(col) {
+                    *o += (x - y).abs();
+                }
+            }
+            row[i] = f64::INFINITY;
+            if row.iter().any(|x| x.is_nan()) {
+                f64::NAN
+            } else {
+                row.iter().copied().fold(f64::INFINITY, f64::min)
+            }
         })
         .collect();
     let np = py.import("numpy")?;

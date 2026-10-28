@@ -89,9 +89,21 @@ fn non_negative(obj: Opt, l: usize, default: f64, op: &str, name: &str) -> PyRes
 
 /// Element type of a permutation chromosome: integer arrays are processed as i32 without a round
 /// trip through f64.
-trait Gene: Copy + PartialEq + PartialOrd {
+trait Gene: Copy + PartialEq + PartialOrd + Default {
     /// The gene as an integer, or None when it is not a whole number.
     fn whole(self) -> Option<i64>;
+
+    /// The smallest and largest gene as integers (None when one is not a whole number); i64::MAX
+    /// and i64::MIN for no genes.
+    fn whole_range(genes: &[Self]) -> Option<(i64, i64)> {
+        let (mut min, mut max) = (i64::MAX, i64::MIN);
+        for &v in genes {
+            let v = v.whole()?;
+            min = min.min(v);
+            max = max.max(v);
+        }
+        Some((min, max))
+    }
 }
 
 impl Gene for f64 {
@@ -104,6 +116,13 @@ impl Gene for i32 {
     fn whole(self) -> Option<i64> {
         Some(self as i64)
     }
+
+    fn whole_range(genes: &[Self]) -> Option<(i64, i64)> {
+        // every i32 is whole, so this is a plain (vectorised) min / max
+        let min = genes.iter().copied().min().map_or(i64::MAX, i64::from);
+        let max = genes.iter().copied().max().map_or(i64::MIN, i64::from);
+        Some((min, max))
+    }
 }
 
 /// geatpy 2.7.0 checks that every row of a permutation chromosome holds distinct genes.
@@ -114,6 +133,24 @@ fn check_permutation<T: Gene>(chrom: &Array2<T>, name: &str) -> PyResult<()> {
             name
         ))
     };
+    let l = chrom.ncols();
+    if let (Some(flat), true) = (chrom.as_slice(), l > 0) {
+        // the usual case: one index for the whole matrix, and a table of the last row that held
+        // each value, so it never has to be cleared
+        if let Some(index) = DenseIndex::new(flat, &[]).filter(|ix| ix.size <= 8 * l + 16) {
+            let mut last = vec![0usize; index.size];
+            for (r, row) in flat.chunks_exact(l).enumerate() {
+                for &v in row {
+                    let k = index.key(v);
+                    if last[k] == r + 1 {
+                        return Err(err());
+                    }
+                    last[k] = r + 1;
+                }
+            }
+            return Ok(());
+        }
+    }
     let mut seen = Vec::new();
     for row in chrom.rows() {
         let owned;
@@ -148,6 +185,7 @@ fn check_permutation<T: Gene>(chrom: &Array2<T>, name: &str) -> PyResult<()> {
 
 /// Maps the values of permutation rows to dense slots when they are all integers within a small
 /// range, so positions can be looked up in O(1) instead of searching the row.
+#[derive(Clone, Copy)]
 struct DenseIndex {
     min: i64,
     size: usize,
@@ -155,12 +193,9 @@ struct DenseIndex {
 
 impl DenseIndex {
     fn new<T: Gene>(a: &[T], b: &[T]) -> Option<Self> {
-        let (mut min, mut max) = (i64::MAX, i64::MIN);
-        for &v in a.iter().chain(b) {
-            let v = v.whole()?;
-            min = min.min(v);
-            max = max.max(v);
-        }
+        let (min_a, max_a) = T::whole_range(a)?;
+        let (min_b, max_b) = T::whole_range(b)?;
+        let (min, max) = (min_a.min(min_b), max_a.max(max_b));
         let size = if a.is_empty() && b.is_empty() {
             0
         } else {
@@ -609,22 +644,23 @@ pub fn recdis<'py>(
     )
 }
 
-/// Real-valued recombination framework: `pair(p1, p2, rng)` returns both offspring of one pair,
-/// `global(pa, pb, rng)` one gene of a global-mode offspring.
+/// Real-valued recombination framework: `pair(i, p1, p2, c1, c2, rng)` writes both offspring of
+/// pair i into `c1` and `c2`, which start as copies of the parents (the second offspring is computed
+/// but dropped when only N/2 offspring are returned); `global(j, pa, pb, rng)` is one gene of a
+/// global-mode offspring.
 fn real_recombination<'py, F, G>(
     py: Python<'py>,
     name: &str,
-    old: &Bound<'py, PyAny>,
+    chrom: Array2<f64>,
     pc: f64,
     half_n: Opt,
     mut pair: F,
     mut global: G,
 ) -> PyResult<PyObject>
 where
-    F: FnMut(usize, &[f64], &[f64], &mut rand::rngs::SmallRng) -> (Vec<f64>, Vec<f64>),
+    F: FnMut(usize, &[f64], &[f64], &mut [f64], &mut [f64], &mut rand::rngs::SmallRng),
     G: FnMut(usize, f64, f64, &mut rand::rngs::SmallRng) -> f64,
 {
-    let chrom = to_f64_array2(old)?;
     let (n, l) = (chrom.shape()[0], chrom.shape()[1]);
     let half = n / 2;
     let mut rng = crate::utils::rng();
@@ -641,29 +677,30 @@ where
             out
         }
         mode => {
-            let rows = if matches!(mode, Pairing::Half) {
-                half
+            let full = matches!(mode, Pairing::Full);
+            let flat = chrom.as_slice().expect("converted arrays are row-major");
+            let mut out = if full {
+                flat.to_vec()
             } else {
-                n
+                flat[..half * l].to_vec()
             };
-            let mut out = Array2::<f64>::zeros((rows, l));
-            if matches!(mode, Pairing::Full) {
-                out.assign(&chrom);
-            }
+            let mut spare = vec![0.0; l];
             for i in 0..half {
-                let (p1, p2) = (chrom.row(i).to_vec(), chrom.row(i + half).to_vec());
-                let (c1, c2) = if rng.gen::<f64>() < pc {
-                    pair(i, &p1, &p2, &mut rng)
-                } else {
-                    (p1, p2)
-                };
-                out.row_mut(i).assign(&numpy::ndarray::Array1::from(c1));
-                if matches!(mode, Pairing::Full) {
-                    out.row_mut(i + half)
-                        .assign(&numpy::ndarray::Array1::from(c2));
+                let (p1, p2) = (&flat[i * l..(i + 1) * l], &flat[(i + half) * l..][..l]);
+                if rng.gen::<f64>() >= pc {
+                    continue;
                 }
+                let (c1, c2) = if full {
+                    let (lo, hi) = out.split_at_mut((i + half) * l);
+                    (&mut lo[i * l..(i + 1) * l], &mut hi[..l])
+                } else {
+                    spare.copy_from_slice(p2);
+                    (&mut out[i * l..(i + 1) * l], &mut spare[..])
+                };
+                pair(i, p1, p2, c1, c2, &mut rng);
             }
-            out
+            let rows = if full { n } else { half };
+            Array2::from_shape_vec((rows, l), out).expect("shape matches")
         }
     };
     chrom_out(py, out, false)
@@ -696,18 +733,16 @@ pub fn recsbx<'py>(
     parallel: Opt<'_, 'py>,
 ) -> PyResult<PyObject> {
     let _ = parallel;
-    let l = to_f64_array2(old_chrom)?.shape()[1];
-    let eta = non_negative(n, l, 20.0, "recsbx", "n")?;
+    let chrom = to_f64_array2(old_chrom)?;
+    let eta = non_negative(n, chrom.ncols(), 20.0, "recsbx", "n")?;
     let eta2 = eta.clone();
     real_recombination(
         py,
         "recsbx",
-        old_chrom,
+        chrom,
         prob(xovr, 0.7, "recsbx")?,
         half_n,
-        move |_, p1, p2, rng| {
-            let mut c1 = p1.to_vec();
-            let mut c2 = p2.to_vec();
+        move |_, p1, p2, c1, c2, rng| {
             for j in 0..p1.len() {
                 if rng.gen::<f64>() < 0.5 {
                     let b = sbx_beta(eta[j], rng);
@@ -715,7 +750,6 @@ pub fn recsbx<'py>(
                     c2[j] = 0.5 * ((1.0 - b) * p1[j] + (1.0 + b) * p2[j]);
                 }
             }
-            (c1, c2)
         },
         move |j, a, b, rng| {
             if rng.gen::<f64>() < 0.5 {
@@ -773,40 +807,53 @@ fn intermediate<'py>(
 ) -> PyResult<PyObject> {
     let alpha = parse_alpha(alpha, name)?;
     let draw = |rng: &mut rand::rngs::SmallRng| rng.gen::<f64>() * 1.5 - 0.25;
-    let factor = |row: usize, j: usize, rng: &mut rand::rngs::SmallRng, shared: f64| -> f64 {
-        match &alpha {
-            Alpha::Scalar(a) => *a,
-            Alpha::Matrix(m) => m[[row.min(m.shape()[0] - 1), j.min(m.shape()[1] - 1)]],
-            Alpha::Random => {
-                if per_gene {
-                    draw(rng)
-                } else {
-                    shared
-                }
-            }
-        }
-    };
     let chrom = to_f64_array2(old)?;
     let half = chrom.shape()[0] / 2;
+    // c = p1 + a (p2 - p1) for every gene of one offspring (`row` selects the Alpha matrix row)
+    let child = |row: usize,
+                 p1: &[f64],
+                 p2: &[f64],
+                 c: &mut [f64],
+                 rng: &mut rand::rngs::SmallRng,
+                 shared: f64| {
+        let genes = c.iter_mut().zip(p1.iter().zip(p2));
+        match &alpha {
+            Alpha::Scalar(a) => genes.for_each(|(c, (&x, &y))| *c = x + a * (y - x)),
+            Alpha::Matrix(m) => {
+                let r = row.min(m.shape()[0] - 1);
+                let last = m.shape()[1] - 1;
+                for (j, (c, (&x, &y))) in genes.enumerate() {
+                    *c = x + m[[r, j.min(last)]] * (y - x);
+                }
+            }
+            Alpha::Random if per_gene => {
+                genes.for_each(|(c, (&x, &y))| *c = x + draw(rng) * (y - x))
+            }
+            Alpha::Random => genes.for_each(|(c, (&x, &y))| *c = x + shared * (y - x)),
+        }
+    };
+    let factor = |j: usize, rng: &mut rand::rngs::SmallRng, shared: f64| -> f64 {
+        match &alpha {
+            Alpha::Scalar(a) => *a,
+            Alpha::Matrix(m) => m[[0, j.min(m.shape()[1] - 1)]],
+            Alpha::Random if per_gene => draw(rng),
+            Alpha::Random => shared,
+        }
+    };
     real_recombination(
         py,
         name,
-        old,
+        chrom,
         prob(rec_opt, 0.7, name)?,
         half_n,
-        |i, p1, p2, rng| {
+        |i, p1, p2, c1, c2, rng| {
             let (s1, s2) = (draw(rng), draw(rng));
-            let c1 = (0..p1.len())
-                .map(|j| p1[j] + factor(i, j, rng, s1) * (p2[j] - p1[j]))
-                .collect();
-            let c2 = (0..p1.len())
-                .map(|j| p1[j] + factor(i + half, j, rng, s2) * (p2[j] - p1[j]))
-                .collect();
-            (c1, c2)
+            child(i, p1, p2, c1, rng, s1);
+            child(i + half, p1, p2, c2, rng, s2);
         },
         |j, a, b, rng| {
             let s = draw(rng);
-            a + factor(0, j, rng, s) * (b - a)
+            a + factor(j, rng, s) * (b - a)
         },
     )
 }
@@ -858,8 +905,8 @@ pub fn recndx<'py>(
     parallel: Opt<'_, 'py>,
 ) -> PyResult<PyObject> {
     let _ = parallel;
-    let l = to_f64_array2(old_chrom)?.shape()[1];
-    let aa = non_negative(a, l, 1.4826, "recndx", "A")?;
+    let chrom = to_f64_array2(old_chrom)?;
+    let aa = non_negative(a, chrom.ncols(), 1.4826, "recndx", "A")?;
     let aa2 = aa.clone();
     let gene = |aj: f64, x: f64, y: f64, rng: &mut rand::rngs::SmallRng| -> (f64, f64) {
         let mean = (x + y) * 0.5;
@@ -875,12 +922,10 @@ pub fn recndx<'py>(
     real_recombination(
         py,
         "recndx",
-        old_chrom,
+        chrom,
         prob(xovr, 0.7, "recndx")?,
         half_n,
-        move |_, p1, p2, rng| {
-            let mut c1 = p1.to_vec();
-            let mut c2 = p2.to_vec();
+        move |_, p1, p2, c1, c2, rng| {
             for j in 0..p1.len() {
                 if rng.gen::<f64>() >= 0.5 {
                     let (x, y) = gene(aa[j], p1[j], p2[j], rng);
@@ -888,7 +933,6 @@ pub fn recndx<'py>(
                     c2[j] = y;
                 }
             }
-            (c1, c2)
         },
         move |j, x, y, rng| {
             if rng.gen::<f64>() >= 0.5 {
@@ -909,10 +953,31 @@ fn distinct_cuts<R: Rng>(l: usize, rng: &mut R) -> (usize, usize) {
 /// PMX on the positions where `take` is true, in geatpy 2.7.0's sequential form: at every crossing
 /// position the two offspring exchange their *current* genes, and each offspring swaps the incoming
 /// gene with the position that held it. Both offspring stay permutations.
-fn pmx_pair<T: Gene>(p1: &[T], p2: &[T], take: &[bool]) -> (Vec<T>, Vec<T>) {
-    let mut c1 = p1.to_vec();
-    let mut c2 = p2.to_vec();
-    let Some(index) = DenseIndex::new(p1, p2) else {
+/// Buffers reused across the pairs of one call.
+#[derive(Default)]
+struct PermScratch<T> {
+    pos1: Vec<usize>,
+    pos2: Vec<usize>,
+    take: Vec<bool>,
+    /// kept[slot] == tag marks the genes of the section kept by the current OX offspring
+    kept: Vec<usize>,
+    tag: usize,
+    rest: Vec<T>,
+    /// An index covering every row of the matrix (the rows of a permutation matrix share one value
+    /// range), so it is not rebuilt for every pair.
+    index: Option<DenseIndex>,
+}
+
+impl<T: Gene> PermScratch<T> {
+    fn index(&self, a: &[T], b: &[T]) -> Option<DenseIndex> {
+        self.index.or_else(|| DenseIndex::new(a, b))
+    }
+}
+
+/// PMX on two offspring that start as copies of their parents: for every position k taken, each
+/// offspring swaps its gene at k with the position holding the partner's gene at k.
+fn pmx_in_place<T: Gene>(c1: &mut [T], c2: &mut [T], take: &[bool], s: &mut PermScratch<T>) {
+    let Some(index) = s.index(c1, c2) else {
         for (k, &t) in take.iter().enumerate() {
             if !t {
                 continue;
@@ -925,17 +990,20 @@ fn pmx_pair<T: Gene>(p1: &[T], p2: &[T], take: &[bool]) -> (Vec<T>, Vec<T>) {
                 c2.swap(k, pos);
             }
         }
-        return (c1, c2);
+        return;
     };
     // same swaps as above, with value -> position tables kept up to date
     const NONE: usize = usize::MAX;
-    let mut pos1 = vec![NONE; index.size];
-    let mut pos2 = vec![NONE; index.size];
-    for (k, (&a, &b)) in c1.iter().zip(&c2).enumerate() {
+    let (pos1, pos2) = (&mut s.pos1, &mut s.pos2);
+    for pos in [&mut *pos1, &mut *pos2] {
+        pos.clear();
+        pos.resize(index.size, NONE);
+    }
+    for (k, (&a, &b)) in c1.iter().zip(c2.iter()).enumerate() {
         pos1[index.key(a)] = k;
         pos2[index.key(b)] = k;
     }
-    let swap = |c: &mut Vec<T>, pos: &mut Vec<usize>, k: usize, v: T| {
+    let swap = |c: &mut [T], pos: &mut [usize], k: usize, v: T| {
         let p = pos[index.key(v)];
         if p != NONE {
             c.swap(k, p);
@@ -946,47 +1014,63 @@ fn pmx_pair<T: Gene>(p1: &[T], p2: &[T], take: &[bool]) -> (Vec<T>, Vec<T>) {
     for (k, &t) in take.iter().enumerate() {
         if t {
             let (v1, v2) = (c1[k], c2[k]);
-            swap(&mut c1, &mut pos1, k, v2);
-            swap(&mut c2, &mut pos2, k, v1);
+            swap(c1, pos1, k, v2);
+            swap(c2, pos2, k, v1);
         }
     }
-    (c1, c2)
 }
 
 /// Order crossover: each offspring keeps its own [lo, hi] section and fills the remaining positions
 /// from position 0 onwards with the partner's genes in the partner's order.
-fn ox_pair<T: Gene>(p1: &[T], p2: &[T], lo: usize, hi: usize) -> (Vec<T>, Vec<T>) {
-    let index = DenseIndex::new(p1, p2);
-    let mut kept_set = Vec::new();
-    let mut fill = |own: &[T], other: &[T]| -> Vec<T> {
+fn ox_into<T: Gene>(
+    p1: &[T],
+    p2: &[T],
+    lo: usize,
+    hi: usize,
+    c1: &mut [T],
+    c2: &mut [T],
+    s: &mut PermScratch<T>,
+) {
+    let index = s.index(p1, p2);
+    for (own, other, c) in [(p1, p2, c1), (p2, p1, c2)] {
         let kept = &own[lo..=hi];
-        // membership in the kept section: a bitmap for small integer genes, a scan otherwise
-        let is_kept: Box<dyn Fn(&T) -> bool + '_> = match &index {
-            Some(ix) => {
-                kept_set.clear();
-                kept_set.resize(ix.size, false);
-                for &v in kept {
-                    kept_set[ix.key(v)] = true;
-                }
-                let set = &kept_set;
-                Box::new(move |v: &T| set[ix.key(*v)])
+        // membership in the kept section: a table for small integer genes, a scan otherwise
+        if let Some(ix) = &index {
+            s.tag += 1;
+            s.kept.resize(ix.size, 0);
+            for &v in kept {
+                s.kept[ix.key(v)] = s.tag;
             }
-            None => Box::new(|v: &T| kept.contains(v)),
-        };
-        let mut rest = other.iter().filter(|v| !is_kept(v));
-        (0..own.len())
-            .map(|j| {
-                if (lo..=hi).contains(&j) {
-                    own[j]
-                } else {
-                    *rest.next().unwrap()
+        }
+        let (head, tail) = c.split_at_mut(lo);
+        let (mid, tail) = tail.split_at_mut(hi + 1 - lo);
+        match &index {
+            Some(ix) => {
+                // the partner's genes outside the kept section, compacted without branching
+                s.rest.clear();
+                s.rest.resize(other.len() + 1, T::default());
+                let mut w = 0;
+                for &v in other {
+                    s.rest[w] = v;
+                    w += usize::from(s.kept[ix.key(v)] != s.tag);
                 }
-            })
-            .collect()
-    };
-    let c1 = fill(p1, p2);
-    let c2 = fill(p2, p1);
-    (c1, c2)
+                // rows holding different gene sets can leave too few genes, as `filter` below
+                assert!(
+                    w >= lo + tail.len(),
+                    "the partner lacks genes to fill the offspring"
+                );
+                head.copy_from_slice(&s.rest[..lo]);
+                tail.copy_from_slice(&s.rest[lo..lo + tail.len()]);
+            }
+            None => {
+                let mut rest = other.iter().copied().filter(|v| !kept.contains(v));
+                for x in head.iter_mut().chain(tail.iter_mut()) {
+                    *x = rest.next().unwrap();
+                }
+            }
+        }
+        mid.copy_from_slice(kept);
+    }
 }
 
 /// The permutation crossovers that share the pairing logic below.
@@ -1001,30 +1085,42 @@ enum PermOp {
 }
 
 impl PermOp {
+    /// Both offspring of parents a and b into c1 and c2.
+    #[allow(clippy::too_many_arguments)]
     fn cross<T: Gene, R: Rng>(
         self,
         a: &[T],
         b: &[T],
         global: bool,
         rng: &mut R,
-    ) -> (Vec<T>, Vec<T>) {
+        c1: &mut [T],
+        c2: &mut [T],
+        s: &mut PermScratch<T>,
+    ) {
         let l = a.len();
         if l < 2 {
-            return (b.to_vec(), a.to_vec());
+            c1.copy_from_slice(b);
+            c2.copy_from_slice(a);
+            return;
         }
         match self {
             PermOp::Pmx { uniform, pc } => {
-                let take: Vec<bool> = if uniform {
-                    (0..l).map(|_| global || rng.gen::<f64>() < pc).collect()
+                let mut take = std::mem::take(&mut s.take);
+                take.clear();
+                if uniform {
+                    take.extend((0..l).map(|_| global || rng.gen::<f64>() < pc));
                 } else {
                     let (lo, hi) = distinct_cuts(l, rng);
-                    (0..l).map(|j| j >= lo && j <= hi).collect()
-                };
-                pmx_pair(a, b, &take)
+                    take.extend((0..l).map(|j| j >= lo && j <= hi));
+                }
+                c1.copy_from_slice(a);
+                c2.copy_from_slice(b);
+                pmx_in_place(c1, c2, &take, s);
+                s.take = take;
             }
             PermOp::Ox => {
                 let (lo, hi) = distinct_cuts(l, rng);
-                ox_pair(a, b, lo, hi)
+                ox_into(a, b, lo, hi, c1, c2, s);
             }
         }
     }
@@ -1032,7 +1128,7 @@ impl PermOp {
 
 /// Pairs parents like the other crossovers. With `pair_gate` a pair crosses with probability `pc`;
 /// without it the operator always runs and handles `pc` itself (global mode: Half_N an integer).
-fn permutation_rows<T: Gene>(
+fn permutation_rows<T: Gene + Default>(
     chrom: &Array2<T>,
     op: PermOp,
     pc: f64,
@@ -1042,36 +1138,45 @@ fn permutation_rows<T: Gene>(
     let (n, l) = chrom.dim();
     let half = n / 2;
     let mut rng = crate::utils::rng();
-    let row = |i: usize| chrom.row(i).to_vec();
+    let flat = chrom.as_slice().expect("converted arrays are row-major");
+    let row = |i: usize| &flat[i * l..(i + 1) * l];
+    // one index for all rows when the whole matrix spans a range small enough for one pair
+    let index = DenseIndex::new(flat, &[]).filter(|ix| ix.size <= 8 * l + 16);
+    let mut s = PermScratch {
+        index,
+        ..PermScratch::default()
+    };
+    let mut spare = vec![T::default(); l];
     match mode {
         Pairing::Global(k) => {
-            let mut out = Vec::with_capacity(k * l);
-            for _ in 0..k {
+            let mut out = vec![T::default(); k * l];
+            for c in out.chunks_exact_mut(l.max(1)).take(k) {
                 let (a, b) = random_pair(n, &mut rng);
-                out.extend(op.cross(&row(a), &row(b), true, &mut rng).0);
+                op.cross(row(a), row(b), true, &mut rng, c, &mut spare, &mut s);
             }
             Array2::from_shape_vec((k, l), out).expect("shape matches")
         }
         mode => {
             let full = matches!(mode, Pairing::Full);
             let mut out = if full {
-                chrom.clone()
+                flat.to_vec()
             } else {
-                chrom.slice(numpy::ndarray::s![..half, ..]).to_owned()
+                flat[..half * l].to_vec()
             };
             for i in 0..half {
                 if pair_gate && rng.gen::<f64>() >= pc {
                     continue;
                 }
-                let (c1, c2) = op.cross(&row(i), &row(i + half), false, &mut rng);
-                out.row_mut(i)
-                    .assign(&numpy::ndarray::ArrayView1::from(&c1[..]));
-                if full {
-                    out.row_mut(i + half)
-                        .assign(&numpy::ndarray::ArrayView1::from(&c2[..]));
-                }
+                let (c1, c2) = if full {
+                    let (lo, hi) = out.split_at_mut((i + half) * l);
+                    (&mut lo[i * l..(i + 1) * l], &mut hi[..l])
+                } else {
+                    (&mut out[i * l..(i + 1) * l], &mut spare[..])
+                };
+                op.cross(row(i), row(i + half), false, &mut rng, c1, c2, &mut s);
             }
-            out
+            let rows = if full { n } else { half };
+            Array2::from_shape_vec((rows, l), out).expect("shape matches")
         }
     }
 }

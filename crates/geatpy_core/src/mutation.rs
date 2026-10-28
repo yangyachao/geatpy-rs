@@ -997,8 +997,21 @@ pub fn mutmove<'py>(
     let _ = (parallel, params7);
     check_order_encoding(encoding, "mutmove")?;
     let as_int = is_integer_like(old_chrom);
-    let mut chrom = crate::utils::to_f64_array2(old_chrom)?;
-    let (n, l) = (chrom.shape()[0], chrom.shape()[1]);
+    // integer 'P' chromosomes are moved in place as i32 (no round trip through f64)
+    let int_chrom = if as_int && encoding == "P" {
+        crate::utils::to_i32_array2(old_chrom)
+    } else {
+        None
+    };
+    let float_chrom = match int_chrom {
+        Some(_) => None,
+        None => Some(crate::utils::to_f64_array2(old_chrom)?),
+    };
+    let l = match (&int_chrom, &float_chrom) {
+        (Some(c), _) => c.ncols(),
+        (_, Some(c)) => c.ncols(),
+        _ => unreachable!(),
+    };
     let pm = pm_vec(pm, 1, 1.0, "mutmove")?[0];
     let pr = crate::utils::per_gene(pr, 1, 0.0, "Pr")?[0];
     crate::utils::check_prob(
@@ -1012,38 +1025,57 @@ pub fn mutmove<'py>(
     }
     let len = len.min(l.saturating_sub(1)).max(1);
     let mut rng = crate::utils::rng();
-    if l >= 2 {
-        for i in 0..n {
-            if rng.gen::<f64>() >= pm {
-                continue;
-            }
-            let k = if fixed {
-                len
-            } else {
-                segment_len(l, len, 1, &mut rng)
-            };
-            let start = rng.gen_range(0..=(l - k));
-            let slots = l - k + 1;
-            let dest = (start + 1 + rng.gen_range(0..(l - k).max(1))) % slots;
-            let mut row: Vec<f64> = chrom.row(i).to_vec();
-            let mut seg: Vec<f64> = row.drain(start..start + k).collect();
-            if rng.gen::<f64>() < pr {
-                seg.reverse();
-            }
-            for (t, v) in seg.into_iter().enumerate() {
-                row.insert(dest + t, v);
-            }
-            for (j, v) in row.into_iter().enumerate() {
-                chrom[[i, j]] = v;
-            }
-        }
+    if let Some(mut chrom) = int_chrom {
+        move_rows(&mut chrom, pm, len, fixed, pr, &mut rng);
+        return Ok(chrom.into_pyarray(py).into_any().unbind());
     }
+    let mut chrom = float_chrom.expect("set when not integer");
+    move_rows(&mut chrom, pm, len, fixed, pr, &mut rng);
     let discrete = if encoding == "RI" {
         random_repair_rows(&mut chrom, field_dr, &mut rng)?
     } else {
         None
     };
     order_out(py, chrom, discrete, as_int)
+}
+
+/// Moves one segment of each row, with probability pm, to another of the l - k + 1 positions it can
+/// take once removed (reversed first with probability pr), as rotations of the row in place.
+fn move_rows<T, R: Rng>(
+    chrom: &mut Array2<T>,
+    pm: f64,
+    len: usize,
+    fixed: bool,
+    pr: f64,
+    rng: &mut R,
+) {
+    let l = chrom.ncols();
+    if l < 2 {
+        return;
+    }
+    for mut row in chrom.rows_mut() {
+        if rng.gen::<f64>() >= pm {
+            continue;
+        }
+        let k = if fixed {
+            len
+        } else {
+            segment_len(l, len, 1, rng)
+        };
+        let start = rng.gen_range(0..=(l - k));
+        let slots = l - k + 1;
+        let dest = (start + 1 + rng.gen_range(0..(l - k).max(1))) % slots;
+        let row = row.as_slice_mut().expect("converted arrays are row-major");
+        if rng.gen::<f64>() < pr {
+            row[start..start + k].reverse();
+        }
+        // the segment ends up at dest..dest + k of the row without it
+        if dest <= start {
+            row[dest..start + k].rotate_right(k);
+        } else {
+            row[start..dest + k].rotate_left(k);
+        }
+    }
 }
 
 /// Swap mutation: exchange two distinct genes of each chromosome with probability Pm.
@@ -1064,29 +1096,54 @@ pub fn mutswap<'py>(
     let _ = (parallel, params5, params6, params7);
     check_order_encoding(encoding, "mutswap")?;
     let as_int = is_integer_like(old_chrom);
-    let mut chrom = crate::utils::to_f64_array2(old_chrom)?;
-    let (n, l) = (chrom.shape()[0], chrom.shape()[1]);
+    // integer 'P' chromosomes are swapped in place as i32 (no round trip through f64)
+    let int_chrom = if as_int && encoding == "P" {
+        crate::utils::to_i32_array2(old_chrom)
+    } else {
+        None
+    };
+    let float_chrom = match int_chrom {
+        Some(_) => None,
+        None => Some(crate::utils::to_f64_array2(old_chrom)?),
+    };
+    let l = match (&int_chrom, &float_chrom) {
+        (Some(c), _) => c.ncols(),
+        (_, Some(c)) => c.ncols(),
+        _ => unreachable!(),
+    };
     // geatpy 2.7.0 does not range-check Pm here
     let pm = crate::utils::per_gene(pm, 1, 1.0, "Pm")?[0];
     if let Some(out) = short_permutation(encoding, old_chrom, l)? {
         return Ok(out);
     }
     let mut rng = crate::utils::rng();
-    if l >= 2 {
-        for i in 0..n {
-            if rng.gen::<f64>() < pm {
-                let a = rng.gen_range(0..l);
-                let b = (a + 1 + rng.gen_range(0..l - 1)) % l;
-                chrom.swap([i, a], [i, b]);
-            }
-        }
+    if let Some(mut chrom) = int_chrom {
+        swap_rows(&mut chrom, pm, &mut rng);
+        return Ok(chrom.into_pyarray(py).into_any().unbind());
     }
+    let mut chrom = float_chrom.expect("set when not integer");
+    swap_rows(&mut chrom, pm, &mut rng);
     let discrete = if encoding == "RI" {
         random_repair_rows(&mut chrom, field_dr, &mut rng)?
     } else {
         None
     };
     order_out(py, chrom, discrete, as_int)
+}
+
+/// Exchanges two distinct genes of each row with probability pm.
+fn swap_rows<T, R: Rng>(chrom: &mut Array2<T>, pm: f64, rng: &mut R) {
+    let l = chrom.ncols();
+    if l < 2 {
+        return;
+    }
+    for mut row in chrom.rows_mut() {
+        if rng.gen::<f64>() < pm {
+            let a = rng.gen_range(0..l);
+            let b = (a + 1 + rng.gen_range(0..l - 1)) % l;
+            row.swap(a, b);
+        }
+    }
 }
 
 /// Permutation-point mutation: replace MutN genes by other values of [lb, ub],
