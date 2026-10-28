@@ -690,45 +690,74 @@ pub fn cdist<'py>(
     let pool = crate::parallel::pool_for(na * nb * dim.max(1), CDIST_PAR_MIN_WORK);
     let flat = out.as_slice_mut().expect("owned arrays are contiguous");
     match metric {
-        "euclidean" => pairwise(pool.as_deref(), flat, sa, sb, dim, |x, y| {
-            x.iter()
-                .zip(y)
-                .fold(0.0, |s, (p, q)| s + (p - q).powi(2))
-                .sqrt()
-        }),
-        "cityblock" => pairwise(pool.as_deref(), flat, sa, sb, dim, |x, y| {
-            x.iter().zip(y).fold(0.0, |s, (p, q)| s + (p - q).abs())
-        }),
-        "cosine" => pairwise(pool.as_deref(), flat, sa, sb, dim, |x, y| {
-            1.0 - x.iter().zip(y).fold(0.0, |s, (p, q)| s + p * q)
-        }),
-        _ => pairwise(pool.as_deref(), flat, sa, sb, dim, |x, y| {
-            x.iter().zip(y).fold(0.0, |s, (p, q)| s + p * q)
-        }),
+        "euclidean" => pairwise(
+            pool.as_deref(),
+            flat,
+            sa,
+            sb,
+            dim,
+            |x, y| (x - y) * (x - y),
+            f64::sqrt,
+        ),
+        "cityblock" => pairwise(
+            pool.as_deref(),
+            flat,
+            sa,
+            sb,
+            dim,
+            |x, y| (x - y).abs(),
+            |s| s,
+        ),
+        "cosine" => pairwise(
+            pool.as_deref(),
+            flat,
+            sa,
+            sb,
+            dim,
+            |x, y| x * y,
+            |dot| 1.0 - dot,
+        ),
+        _ => pairwise(pool.as_deref(), flat, sa, sb, dim, |x, y| x * y, |dot| dot),
     }
     Ok(out.into_pyarray(py))
 }
 
 /// out[i, j] = dist(row i of a, row j of b) for row-major `a` and `b` with `dim` columns.
-fn pairwise<F>(
+/// out[i, j] = finish(sum over k of term(a[i, k], b[j, k])), each sum from 0.0 in order of k. A row
+/// of the result is accumulated for all j at once from a column-major copy of B, so the loop over j
+/// vectorises; rows are split across the pool.
+fn pairwise<T, F>(
     pool: Option<&rayon::ThreadPool>,
     out: &mut [f64],
     a: &[f64],
     b: &[f64],
     dim: usize,
-    dist: F,
+    term: T,
+    finish: F,
 ) where
-    F: Fn(&[f64], &[f64]) -> f64 + Sync + Send,
+    T: Fn(f64, f64) -> f64 + Sync + Send,
+    F: Fn(f64) -> f64 + Sync + Send,
 {
     if dim == 0 {
-        out.fill(dist(&[], &[]));
+        out.fill(finish(0.0));
         return;
     }
-    crate::parallel::for_each_row(pool, out, b.len() / dim, |i, out_row| {
-        let x = &a[i * dim..(i + 1) * dim];
-        for (o, y) in out_row.iter_mut().zip(b.chunks_exact(dim)) {
-            *o = dist(x, y);
+    let nb = b.len() / dim;
+    let mut bt = vec![0.0; b.len()];
+    for (j, row) in b.chunks_exact(dim).enumerate() {
+        for (k, &v) in row.iter().enumerate() {
+            bt[k * nb + j] = v;
         }
+    }
+    crate::parallel::for_each_row(pool, out, nb, |i, out_row| {
+        out_row.fill(0.0);
+        for (k, col) in bt.chunks_exact(nb.max(1)).enumerate() {
+            let x = a[i * dim + k];
+            for (o, &y) in out_row.iter_mut().zip(col) {
+                *o += term(x, y);
+            }
+        }
+        out_row.iter_mut().for_each(|o| *o = finish(*o));
     });
 }
 

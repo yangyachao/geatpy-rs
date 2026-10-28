@@ -132,19 +132,25 @@ pub fn Spacing<'py>(
             "zero-size array to reduction operation minimum which has no identity",
         ));
     }
-    // np.min over each row of the distance matrix with an infinite diagonal (NaN propagates)
+    // np.min over each row of the distance matrix with an infinite diagonal (NaN propagates); a row
+    // of L1 distances is accumulated for all k at once from a column-major copy, so the loop over k
+    // vectorises (every distance is still the sum from 0.0 in order of j)
+    let pt = crate::utils::transpose(&p);
     let pool = crate::parallel::pool_for(n * n * m, INDICATOR_PAR_MIN_WORK);
     let d: Vec<f64> = crate::parallel::map_collect(pool.as_deref(), n, |i| {
-        (0..n)
-            .filter(|&k| k != i)
-            .map(|k| (0..m).fold(0.0, |s, j| s + (p[[i, j]] - p[[k, j]]).abs()))
-            .fold(f64::INFINITY, |mn, x| {
-                if x.is_nan() || mn.is_nan() {
-                    f64::NAN
-                } else {
-                    mn.min(x)
-                }
-            })
+        let mut row = vec![0.0; n];
+        for (j, col) in pt.chunks_exact(n).enumerate().take(m) {
+            let x = p[[i, j]];
+            for (o, &y) in row.iter_mut().zip(col) {
+                *o += (x - y).abs();
+            }
+        }
+        row[i] = f64::INFINITY;
+        if row.iter().any(|x| x.is_nan()) {
+            f64::NAN
+        } else {
+            row.iter().copied().fold(f64::INFINITY, f64::min)
+        }
     });
     let np = py.import("numpy")?;
     let var = np.call_method1("var", (numpy::ndarray::Array1::from(d).into_pyarray(py),))?;
@@ -191,28 +197,138 @@ fn hv_exact(mut pts: Vec<Vec<f64>>, refp: &[f64]) -> f64 {
     vol
 }
 
+/// Total order on f64 for the staircase keys (no NaN reaches it).
+#[derive(Clone, Copy, PartialEq)]
+struct Key(f64);
+
+impl Eq for Key {}
+
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Key {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+/// Exact 3-D hypervolume by a sweep along the third objective: the points are inserted in order
+/// of z into the 2-D staircase of the first two objectives, whose dominated area is kept up to
+/// date, so each slab between consecutive z values costs O(log n) instead of a new 2-D sweep.
+fn hv3_sweep(pts: &mut [[f64; 3]], refp: &[f64]) -> f64 {
+    use std::collections::BTreeMap;
+    use std::ops::Bound::{Excluded, Included, Unbounded};
+    pts.sort_by(|a, b| crate::utils::cmp_nan_last(a[2], b[2]));
+    let (rx, ry) = (refp[0], refp[1]);
+    // non-dominated (x, y) so far: x increasing, y decreasing
+    let mut stairs: BTreeMap<Key, f64> = BTreeMap::new();
+    let (mut area, mut vol) = (0.0, 0.0);
+    for (i, p) in pts.iter().enumerate() {
+        let (x, y) = (p[0], p[1]);
+        // the point with the largest x <= x has the smallest y among them
+        let covered = stairs
+            .range(..=Key(x))
+            .next_back()
+            .is_some_and(|(_, &qy)| qy <= y);
+        if !covered {
+            let mut cur_y = stairs.range(..Key(x)).next_back().map_or(ry, |(_, &qy)| qy);
+            let mut cur_x = x;
+            // remove the points p dominates (x' >= x, y' >= y), adding the strips p now covers
+            let dominated: Vec<(Key, f64)> = stairs
+                .range((Included(Key(x)), Unbounded))
+                .take_while(|(_, &qy)| qy >= y)
+                .map(|(&k, &v)| (k, v))
+                .collect();
+            for (k, qy) in &dominated {
+                area += (k.0 - cur_x) * (cur_y - y);
+                cur_x = k.0;
+                cur_y = *qy;
+                stairs.remove(k);
+            }
+            let end = stairs
+                .range((Excluded(Key(x)), Unbounded))
+                .next()
+                .map_or(rx, |(k, _)| k.0);
+            area += (end - cur_x) * (cur_y - y);
+            stairs.insert(Key(x), y);
+        }
+        let upper = pts.get(i + 1).map_or(refp[2], |q| q[2]);
+        vol += area * (upper - p[2]);
+    }
+    vol
+}
+
+/// Exact 4-D hypervolume: slices along the fourth objective, each the 3-D hypervolume of the points
+/// below it (O(n^2 log n) in all; slicing down to two dimensions was O(n^3 log n)).
+fn hv4(mut pts: Vec<Vec<f64>>, refp: &[f64]) -> f64 {
+    pts.retain(|p| p.iter().zip(refp).all(|(a, r)| a < r));
+    pts.sort_by(|a, b| crate::utils::cmp_nan_last(a[3], b[3]));
+    let mut slice: Vec<[f64; 3]> = Vec::with_capacity(pts.len());
+    let mut vol = 0.0;
+    for i in 0..pts.len() {
+        let upper = pts.get(i + 1).map_or(refp[3], |q| q[3]);
+        let depth = upper - pts[i][3];
+        if depth > 0.0 {
+            slice.clear();
+            slice.extend(pts[..=i].iter().map(|p| [p[0], p[1], p[2]]));
+            vol += depth * hv3_sweep(&mut slice, &refp[..3]);
+        }
+    }
+    vol
+}
+
+/// Fraction of `samples` uniform points of the box [min(pts), refp] that some point weakly
+/// dominates, times the box volume. A sample is drawn as m consecutive uniforms (one per objective).
+/// Which point dominates a sample does not matter, so points dominated by another point are dropped
+/// first and the rest are sorted by the first objective: only the prefix with p[0] <= s[0] can
+/// dominate s. The estimate is the same as testing every point against every sample.
 fn hv_monte_carlo(pts: &[Vec<f64>], refp: &[f64], samples: usize) -> f64 {
     let m = refp.len();
     let lo: Vec<f64> = (0..m)
         .map(|j| pts.iter().map(|p| p[j]).fold(f64::INFINITY, f64::min))
         .collect();
     let box_vol: f64 = (0..m).map(|j| refp[j] - lo[j]).product();
-    let mut rng = crate::utils::rng();
-    let hits = (0..samples)
-        .filter(|_| {
-            let s: Vec<f64> = (0..m)
-                .map(|j| lo[j] + rng.gen::<f64>() * (refp[j] - lo[j]))
-                .collect();
-            pts.iter().any(|p| p.iter().zip(&s).all(|(a, b)| a <= b))
+    let weakly = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(x, y)| x <= y);
+    // drop points another point weakly dominates (of equal points the first one stays)
+    let mut kept: Vec<&[f64]> = pts
+        .iter()
+        .enumerate()
+        .filter(|&(i, p)| {
+            !pts.iter()
+                .enumerate()
+                .any(|(k, q)| k != i && weakly(q, p) && (k < i || !weakly(p, q)))
         })
-        .count();
+        .map(|(_, p)| p.as_slice())
+        .collect();
+    kept.sort_by(|a, b| crate::utils::cmp_nan_last(a[0], b[0]));
+    let first: Vec<f64> = kept.iter().map(|p| p[0]).collect();
+    let rest: Vec<f64> = kept.iter().flat_map(|p| p[1..].iter().copied()).collect();
+    let mut rng = crate::utils::rng();
+    let mut s = vec![0.0; m];
+    let mut hits = 0usize;
+    for _ in 0..samples {
+        for (j, x) in s.iter_mut().enumerate() {
+            *x = lo[j] + rng.gen::<f64>() * (refp[j] - lo[j]);
+        }
+        let k = first.partition_point(|&a| a <= s[0]);
+        if rest[..k * (m - 1)]
+            .chunks_exact(m - 1)
+            .any(|p| weakly(p, &s[1..]))
+        {
+            hits += 1;
+        }
+    }
     box_vol * hits as f64 / samples as f64
 }
 
 /// Hypervolume of ObjV normalised like geatpy 2.7.0: each objective is mapped by
 /// (x - lo) / (hi - lo) with lo = min(0, min of the ObjV column) and hi = 1.1 * max of the PF
 /// column (PF defaults to ObjV); the reference point is 1 on every axis and points beyond it are
-/// dropped. Exact for M <= 4, Monte Carlo above.
+/// dropped. Exact for M <= 4 (M = 4 by 3-D sweeps), Monte Carlo with 100000 samples above (as
+/// geatpy 2.7.0).
 #[pyfunction]
 #[pyo3(signature = (ObjV, PF=None, Parallel=None))]
 #[allow(non_snake_case)]
@@ -266,9 +382,12 @@ pub fn HV(ObjV: &Bound<'_, PyAny>, PF: Opt, Parallel: Opt) -> PyResult<f64> {
         return Ok(0.0);
     }
     let refp = vec![1.0; m];
-    Ok(if m <= 4 {
+    Ok(if m == 4 {
+        hv4(inside, &refp)
+    } else if m < 4 {
         hv_exact(inside, &refp)
     } else {
-        hv_monte_carlo(&inside, &refp, 1_000_000)
+        // geatpy 2.7.0 draws 100000 samples
+        hv_monte_carlo(&inside, &refp, 100_000)
     })
 }

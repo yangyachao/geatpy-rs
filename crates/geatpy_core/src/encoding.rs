@@ -198,7 +198,7 @@ fn decode_view<T: Copy>(
     let f = parse_field_d(field, Some(c.ncols()), name)?;
     let d = f.lens.len();
     let mut phen = Array2::<f64>::zeros((c.nrows(), d));
-    // per-variable constants, hoisted out of the row loop (same arithmetic as before)
+    // first chromosome position of every variable
     let starts: Vec<usize> = f
         .lens
         .iter()
@@ -208,16 +208,47 @@ fn decode_view<T: Copy>(
             Some(start)
         })
         .collect();
-    let full: Vec<f64> = f.lens.iter().map(|&l| 2f64.powi(l as i32)).collect();
-    // weight of every chromosome position within its segment (most significant bit first; codes
-    // are at most 31 bits), so a segment decodes as an OR of selected weights, which vectorises
-    let weights: Vec<u32> = f
-        .lens
-        .iter()
-        .flat_map(|&l| (0..l).rev().map(|t| 1u32 << t))
+    // per-variable constants, hoisted out of the row loop (same arithmetic as computing them per gene)
+    let vars: Vec<VarCode> = (0..d)
+        .map(|j| {
+            let full = 2f64.powi(f.lens[j] as i32);
+            let rule = match mode {
+                Decode::Int => {
+                    let (lb, ub) = (f.lb[j] as i64, f.ub[j] as i64);
+                    Rule::Int {
+                        lb,
+                        span: (ub - lb).abs(),
+                        div: full as i64 - 1,
+                    }
+                }
+                Decode::Mixed if f.discrete[j] => Rule::Rounded {
+                    lb: f.lb[j],
+                    span: (f.ub[j] - f.lb[j]).abs(),
+                    div: full - 1.0,
+                },
+                _ => Rule::Real {
+                    lb: f.lb[j],
+                    span: (f.ub[j] - f.lb[j]).abs(),
+                    offset: if f.lbin[j] { 0.0 } else { 1.0 },
+                    div: full + 1.0 - f.ubin[j] as u8 as f64 - f.lbin[j] as u8 as f64,
+                },
+            };
+            VarCode {
+                start: starts[j],
+                end: starts[j] + f.lens[j],
+                gray: f.gray[j],
+                rule,
+            }
+        })
         .collect();
-    let span: Vec<f64> = (0..d).map(|j| (f.ub[j] - f.lb[j]).abs()).collect();
     let out = phen.as_slice_mut().expect("fresh arrays are contiguous");
+    // Each row is first packed into 64-bit words, position p at bit 63 - p % 64 of word p / 64, and
+    // a variable's code is then one shifted window of the words: the bits of its segment, most
+    // significant first. Packing goes through one byte (0 or 1) per gene, eight of which a
+    // multiplication gathers into one byte of bits (byte i to bit i).
+    let words_per_row = c.ncols().div_ceil(64);
+    let mut ones = vec![0u8; words_per_row * 64];
+    let mut words = vec![0u64; words_per_row + 1];
     for (i, row) in c.outer_iter().enumerate() {
         let owned;
         let row: &[T] = match row.as_slice() {
@@ -227,15 +258,28 @@ fn decode_view<T: Copy>(
                 &owned
             }
         };
-        let out_row = &mut out[i * d..(i + 1) * d];
-        for j in 0..d {
-            let (a, b) = (starts[j], starts[j] + f.lens[j]);
-            let mut v = row[a..b]
-                .iter()
-                .zip(&weights[a..b])
-                .fold(0u32, |acc, (&bit, &w)| acc | if one(bit) { w } else { 0 })
-                as u64;
-            if f.gray[j] {
+        for (o, &bit) in ones.iter_mut().zip(row) {
+            *o = u8::from(one(bit));
+        }
+        for (w, genes) in words.iter_mut().zip(ones.chunks_exact(64)) {
+            let mut lsb_first = 0u64;
+            for (q, eight) in genes.chunks_exact(8).enumerate() {
+                let x = u64::from_le_bytes(eight.try_into().expect("eight bytes"));
+                lsb_first |= (x.wrapping_mul(0x0102_0408_1020_4080) >> 56) << (8 * q);
+            }
+            *w = lsb_first.reverse_bits();
+        }
+        for (x, var) in out[i * d..(i + 1) * d].iter_mut().zip(&vars) {
+            let len = var.end - var.start;
+            let mut v = if len == 0 {
+                0
+            } else {
+                let (w, off) = (var.start / 64, var.start % 64);
+                // the 64 bits from the segment start on (the extra last word keeps w + 1 in range)
+                let window = (words[w] << off) | ((words[w + 1] >> 1) >> (63 - off));
+                window >> (64 - len)
+            };
+            if var.gray {
                 // binary bit = XOR of all Gray bits above and at it (prefix XOR from the top)
                 v ^= v >> 1;
                 v ^= v >> 2;
@@ -244,19 +288,15 @@ fn decode_view<T: Copy>(
                 v ^= v >> 16;
             }
             let k = v as f64;
-            out_row[j] = match mode {
-                Decode::Int => {
-                    let (lb, ub) = (f.lb[j] as i64, f.ub[j] as i64);
-                    (lb + (k as i64 * (ub - lb).abs()) / (full[j] as i64 - 1)) as f64
-                }
-                Decode::Mixed if f.discrete[j] => {
-                    f.lb[j] + (k * span[j] / (full[j] - 1.0) + 0.5).trunc()
-                }
-                _ => {
-                    let offset = if f.lbin[j] { 0.0 } else { 1.0 };
-                    let denom = full[j] + 1.0 - f.ubin[j] as u8 as f64 - f.lbin[j] as u8 as f64;
-                    f.lb[j] + (k + offset) * span[j] / denom
-                }
+            *x = match var.rule {
+                Rule::Int { lb, span, div } => (lb + (k as i64 * span) / div) as f64,
+                Rule::Rounded { lb, span, div } => lb + (k * span / div + 0.5).trunc(),
+                Rule::Real {
+                    lb,
+                    span,
+                    offset,
+                    div,
+                } => lb + (k + offset) * span / div,
             };
         }
     }
@@ -267,6 +307,29 @@ enum Decode {
     Mixed,
     Real,
     Int,
+}
+
+/// How one variable maps its code k to a value.
+#[derive(Clone, Copy)]
+enum Rule {
+    /// bs2int: lb + k |ub - lb| / (2^len - 1) in integers
+    Int { lb: i64, span: i64, div: i64 },
+    /// an integer variable of bs2ri: lb + trunc(k |ub - lb| / (2^len - 1) + 0.5)
+    Rounded { lb: f64, span: f64, div: f64 },
+    /// lb + (k + offset) |ub - lb| / div, with the borders included or not
+    Real {
+        lb: f64,
+        span: f64,
+        offset: f64,
+        div: f64,
+    },
+}
+
+struct VarCode {
+    start: usize,
+    end: usize,
+    gray: bool,
+    rule: Rule,
 }
 
 fn decode_bg<'py>(
@@ -452,7 +515,19 @@ pub fn crtbp<'py>(
 fn random_bits(py: Python<'_>, nind: usize, lind: usize) -> PyResult<PyObject> {
     crate::utils::check_alloc(&[nind, lind], 8, "int64")?;
     let mut rng = crate::utils::rng();
-    let chrom = Array2::from_shape_fn((nind, lind), |_| rng.gen_range(0..2i64));
+    // The draws of rand 0.8's `gen_range(0..2)`, written out so the loop does not branch on them:
+    // it takes the top bit of a u64 and rejects the u64 when its bit 62 is set (its rejection zone
+    // for a range of 2).
+    let total = nind * lind;
+    let mut bits = vec![0i64; total + 1];
+    let mut w = 0;
+    while w < total {
+        let v: u64 = rng.gen();
+        bits[w] = (v >> 63) as i64;
+        w += usize::from(v & (1 << 62) == 0);
+    }
+    bits.truncate(total);
+    let chrom = Array2::from_shape_vec((nind, lind), bits).expect("shape matches");
     Ok(chrom.into_pyarray(py).into_any().unbind())
 }
 
