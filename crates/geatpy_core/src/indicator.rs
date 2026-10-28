@@ -170,28 +170,54 @@ fn hv_exact(mut pts: Vec<Vec<f64>>, refp: &[f64]) -> f64 {
     vol
 }
 
+/// Fraction of `samples` uniform points of the box [min(pts), refp] that some point weakly
+/// dominates, times the box volume. A sample is drawn as m consecutive uniforms (one per objective).
+/// Which point dominates a sample does not matter, so points dominated by another point are dropped
+/// first and the rest are sorted by the first objective: only the prefix with p[0] <= s[0] can
+/// dominate s. The estimate is the same as testing every point against every sample.
 fn hv_monte_carlo(pts: &[Vec<f64>], refp: &[f64], samples: usize) -> f64 {
     let m = refp.len();
     let lo: Vec<f64> = (0..m)
         .map(|j| pts.iter().map(|p| p[j]).fold(f64::INFINITY, f64::min))
         .collect();
     let box_vol: f64 = (0..m).map(|j| refp[j] - lo[j]).product();
-    let mut rng = crate::utils::rng();
-    let hits = (0..samples)
-        .filter(|_| {
-            let s: Vec<f64> = (0..m)
-                .map(|j| lo[j] + rng.gen::<f64>() * (refp[j] - lo[j]))
-                .collect();
-            pts.iter().any(|p| p.iter().zip(&s).all(|(a, b)| a <= b))
+    let weakly = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(x, y)| x <= y);
+    // drop points another point weakly dominates (of equal points the first one stays)
+    let mut kept: Vec<&[f64]> = pts
+        .iter()
+        .enumerate()
+        .filter(|&(i, p)| {
+            !pts.iter()
+                .enumerate()
+                .any(|(k, q)| k != i && weakly(q, p) && (k < i || !weakly(p, q)))
         })
-        .count();
+        .map(|(_, p)| p.as_slice())
+        .collect();
+    kept.sort_by(|a, b| crate::utils::cmp_nan_last(a[0], b[0]));
+    let first: Vec<f64> = kept.iter().map(|p| p[0]).collect();
+    let rest: Vec<f64> = kept.iter().flat_map(|p| p[1..].iter().copied()).collect();
+    let mut rng = crate::utils::rng();
+    let mut s = vec![0.0; m];
+    let mut hits = 0usize;
+    for _ in 0..samples {
+        for (j, x) in s.iter_mut().enumerate() {
+            *x = lo[j] + rng.gen::<f64>() * (refp[j] - lo[j]);
+        }
+        let k = first.partition_point(|&a| a <= s[0]);
+        if rest[..k * (m - 1)]
+            .chunks_exact(m - 1)
+            .any(|p| weakly(p, &s[1..]))
+        {
+            hits += 1;
+        }
+    }
     box_vol * hits as f64 / samples as f64
 }
 
 /// Hypervolume of ObjV normalised like geatpy 2.7.0: each objective is mapped by
 /// (x - lo) / (hi - lo) with lo = min(0, min of the ObjV column) and hi = 1.1 * max of the PF
 /// column (PF defaults to ObjV); the reference point is 1 on every axis and points beyond it are
-/// dropped. Exact for M <= 4, Monte Carlo above.
+/// dropped. Exact for M <= 4, Monte Carlo with 100000 samples above (as geatpy 2.7.0).
 #[pyfunction]
 #[pyo3(signature = (ObjV, PF=None, Parallel=None))]
 #[allow(non_snake_case)]
@@ -248,6 +274,7 @@ pub fn HV(ObjV: &Bound<'_, PyAny>, PF: Opt, Parallel: Opt) -> PyResult<f64> {
     Ok(if m <= 4 {
         hv_exact(inside, &refp)
     } else {
-        hv_monte_carlo(&inside, &refp, 1_000_000)
+        // geatpy 2.7.0 draws 100000 samples
+        hv_monte_carlo(&inside, &refp, 100_000)
     })
 }
