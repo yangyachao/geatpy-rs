@@ -4,9 +4,18 @@
 //! per task, one candidate per task), so in the default floating-point environment the result is
 //! bit-identical to the serial one for every thread count. (Worker threads keep the
 //! floating-point control bits of the thread that built the pool, so a caller that turns on
-//! flush-to-zero afterwards may see subnormal results differ.) Every parallel call has a fixed
-//! hand-off cost of tens of microseconds, so each operator stays serial below a work threshold
-//! measured where the parallel path starts to pay.
+//! flush-to-zero afterwards may see subnormal results differ.)
+//!
+//! Every parallel call has a hand-off cost. Between two calls in an algorithm the workers have
+//! fallen asleep (they do after a few tens of microseconds idle), and waking a pool costs more the
+//! more threads it has, however little of it the work uses. How much depends on the machine, above
+//! all on how deep its idle cores sleep: on an M2 Pro about 16 us for two threads, 30 us for four
+//! and 90 us for ten; on an i9-13900H laptop under Linux (C3, 1 ms exit latency) 20-150 us for two
+//! and 130-280 us for four or more; on a Xeon Silver 4310 server (C6, 170 us) 25-65 us for up to
+//! eight and 55-160 us for 24. So besides the pool of every thread there are pools of 2, 4, 8, ...
+//! threads, and `pool_sized` gives a call the one expected to finish first, or none when no pool
+//! beats the serial path clearly. Outside macOS the hand-off of each pool is measured once, when a
+//! call first could go parallel.
 
 use pyo3::prelude::*;
 use rayon::prelude::*;
@@ -21,9 +30,18 @@ static PARALLEL_CALLS: AtomicUsize = AtomicUsize::new(0);
 /// Threads set by `set_num_threads`; 0 means the default.
 static REQUESTED: AtomicUsize = AtomicUsize::new(0);
 
-/// The pool and the thread count it was built for; `None` as the pool remembers a failed build.
-type Slot = Option<(usize, Option<Arc<ThreadPool>>)>;
-static POOL: Mutex<Slot> = Mutex::new(None);
+/// The pools built so far and their thread counts (`None` as a pool remembers a failed build;
+/// powers of two are kept, other sizes, all threads, only until another one is built), and the
+/// hand-off cost in ns measured for each pool size.
+struct Slot {
+    pools: Vec<(usize, Option<Arc<ThreadPool>>)>,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    handoffs: Vec<(usize, f64)>,
+}
+static POOL: Mutex<Slot> = Mutex::new(Slot {
+    pools: Vec::new(),
+    handoffs: Vec::new(),
+});
 
 fn lock() -> MutexGuard<'static, Slot> {
     POOL.lock().unwrap_or_else(|e| e.into_inner())
@@ -57,17 +75,121 @@ pub fn num_threads() -> usize {
     n.clamp(1, cpus())
 }
 
-/// The pool to run `work` units on, or None to run serially. The pool is built without holding
-/// the lock (building starts OS threads), so a fork in another thread never inherits it locked.
+/// The pool of every thread to run `work` units on, or None to run serially below `min_work`.
 pub fn pool_for(work: usize, min_work: usize) -> Option<Arc<ThreadPool>> {
     let threads = num_threads();
     if threads <= 1 || work < min_work {
         return None;
     }
-    if let Some((t, pool)) = lock().as_ref() {
-        if *t == threads {
-            return pool.clone();
-        }
+    pool(threads)
+}
+
+/// Below this serial time (ns) no machine measured gains from going parallel, so `pool_sized`
+/// decides without measuring any hand-off.
+const MIN_PARALLEL_NS: f64 = 20_000.0;
+
+/// Speed-up of the work itself on a pool of `threads`. Outside macOS logical CPUs often include
+/// hyper-threads and efficiency cores (an i9-13900H has 20 for 6 performance cores): there GD
+/// 800 x 3 ran 5.6 times faster on 8 threads and 7.6 on 20, after the hand-off, about p^0.7.
+#[cfg(target_os = "macos")]
+fn speedup(threads: usize) -> f64 {
+    threads as f64
+}
+#[cfg(not(target_os = "macos"))]
+fn speedup(threads: usize) -> f64 {
+    (threads as f64).powf(0.7)
+}
+
+/// The pool to run `work` units on, each taking about `unit_ns` serially, or None to run
+/// serially. With p threads a call is expected to take serial / speedup(p) plus the pool's
+/// hand-off; the pool (2, 4, 8, ... or every thread) expected to finish first is taken if that
+/// beats 85% of the serial time, a margin for uneven cores and lower all-core clocks.
+pub fn pool_sized(work: usize, unit_ns: f64) -> Option<Arc<ThreadPool>> {
+    let threads = num_threads();
+    let serial = work as f64 * unit_ns;
+    if threads <= 1 || serial < MIN_PARALLEL_NS {
+        return None;
+    }
+    let (best, expected) = std::iter::successors(Some(2usize), |&p| p.checked_mul(2))
+        .take_while(|&p| p < threads)
+        .chain(std::iter::once(threads))
+        .filter_map(|p| {
+            let (pool, ns) = with_handoff(p)?;
+            Some((pool, serial / speedup(p) + ns))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))?;
+    (expected < 0.85 * serial).then_some(best)
+}
+
+/// The pool of `threads` workers and its hand-off cost in ns, None if it cannot be built.
+#[cfg(target_os = "macos")]
+fn with_handoff(threads: usize) -> Option<(Arc<ThreadPool>, f64)> {
+    pool(threads).map(|p| (p, 8_000.0 * threads as f64))
+}
+
+/// The pool of `threads` workers and its hand-off cost in ns, None if it cannot be built. The
+/// cost is measured on the pool's first use, without holding the lock: nine calls that each give
+/// every worker 20 us of work after 2, 5 or 10 ms idle (how deep idle cores sleep, and so how long
+/// they take to wake, varies from call to call and with the idle time), and the second largest
+/// excess over 20 us, about 55 ms in all. Threads measuring the same pool at once slow each other
+/// down, which only errs towards staying serial. The measurement is kept across forks.
+#[cfg(not(target_os = "macos"))]
+fn with_handoff(threads: usize) -> Option<(Arc<ThreadPool>, f64)> {
+    use std::time::{Duration, Instant};
+    let known = |slot: &Slot| {
+        slot.handoffs
+            .iter()
+            .find(|(t, _)| *t == threads)
+            .map(|&(_, ns)| ns)
+    };
+    let pool = pool(threads)?;
+    if let Some(ns) = known(&lock()) {
+        return Some((pool, ns));
+    }
+    const WORK: Duration = Duration::from_micros(20);
+    let call = || {
+        pool.install(|| {
+            (0..threads).into_par_iter().for_each(|_| {
+                let start = Instant::now();
+                while start.elapsed() < WORK {
+                    std::hint::spin_loop();
+                }
+            })
+        })
+    };
+    call();
+    let mut excess: Vec<f64> = [2, 5, 10, 2, 5, 10, 2, 5, 10]
+        .iter()
+        .map(|&ms| {
+            std::thread::sleep(Duration::from_millis(ms));
+            let start = Instant::now();
+            call();
+            start.elapsed().saturating_sub(WORK).as_nanos() as f64
+        })
+        .collect();
+    excess.sort_by(f64::total_cmp);
+    let ns = excess[excess.len() - 2];
+    let mut slot = lock();
+    // another thread measured it meanwhile: keep that one
+    let ns = known(&slot).unwrap_or_else(|| {
+        slot.handoffs.push((threads, ns));
+        ns
+    });
+    drop(slot);
+    Some((pool, ns))
+}
+
+/// The pool of `threads` workers. It is built without holding the lock (building starts OS
+/// threads), so a fork in another thread never inherits it locked.
+fn pool(threads: usize) -> Option<Arc<ThreadPool>> {
+    let find = |slot: &Slot| {
+        slot.pools
+            .iter()
+            .find(|(t, _)| *t == threads)
+            .map(|(_, pool)| pool.clone())
+    };
+    if let Some(pool) = find(&lock()) {
+        return pool;
     }
     let built = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -76,14 +198,15 @@ pub fn pool_for(work: usize, min_work: usize) -> Option<Arc<ThreadPool>> {
         .ok()
         .map(Arc::new);
     let mut slot = lock();
-    match slot.as_ref() {
-        // another thread installed a pool of this size meanwhile: use that one
-        Some((t, pool)) if *t == threads => pool.clone(),
-        _ => {
-            *slot = Some((threads, built.clone()));
-            built
-        }
+    // another thread installed a pool of this size meanwhile: use that one
+    if let Some(pool) = find(&slot) {
+        return pool;
     }
+    if !threads.is_power_of_two() {
+        slot.pools.retain(|(t, _)| t.is_power_of_two());
+    }
+    slot.pools.push((threads, built.clone()));
+    built
 }
 
 thread_local! {
@@ -92,8 +215,8 @@ thread_local! {
 }
 
 /// Registers `os.register_at_fork` handlers: the pool lock is taken before a fork and released in
-/// both processes afterwards, and the child forgets the pool, whose worker threads exist only in
-/// the parent (it is leaked, as tearing it down would wait for those threads).
+/// both processes afterwards, and the child forgets the pools, whose worker threads exist only in
+/// the parent (they are leaked, as tearing them down would wait for those threads).
 pub fn register_fork_handlers(py: Python<'_>) -> PyResult<()> {
     use pyo3::types::{PyCFunction, PyDict, PyTuple};
     let os = py.import("os")?;
@@ -123,9 +246,7 @@ pub fn register_fork_handlers(py: Python<'_>) -> PyResult<()> {
         |_: &Bound<'_, PyTuple>, _: Option<&Bound<'_, PyDict>>| {
             FORK_GUARD.with(|g| {
                 if let Some(mut slot) = g.borrow_mut().take() {
-                    if let Some((_, Some(pool))) = slot.take() {
-                        std::mem::forget(pool);
-                    }
+                    std::mem::forget(std::mem::take(&mut slot.pools));
                 }
             });
         },
@@ -170,6 +291,24 @@ where
             let mut scratch = init();
             (0..n).map(|i| f(&mut scratch, i)).collect()
         }
+    }
+}
+
+/// (0..n).fold(init(), f), on `pool` when there is one: pieces of the range are folded from their
+/// own init() and combined by `merge`, which must give the same result however the range is split.
+pub fn fold_merge<A, I, F, M>(pool: Option<&ThreadPool>, n: usize, init: I, f: F, merge: M) -> A
+where
+    A: Send,
+    I: Fn() -> A + Sync + Send,
+    F: Fn(A, usize) -> A + Sync + Send,
+    M: Fn(A, A) -> A + Sync + Send,
+{
+    match pool {
+        Some(p) => {
+            PARALLEL_CALLS.fetch_add(1, Ordering::Relaxed);
+            p.install(|| (0..n).into_par_iter().fold(&init, &f).reduce(&init, &merge))
+        }
+        None => (0..n).fold(init(), f),
     }
 }
 

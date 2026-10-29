@@ -31,12 +31,24 @@ fn pair(
     Ok((p, r))
 }
 
-/// Distance evaluations x objectives from which GD and IGD run in parallel; the per-row minima are
-/// computed in parallel and summed in order, so the result does not change.
-const INDICATOR_PAR_MIN_WORK: usize = 1 << 16;
-/// The same for Spacing, whose serial path computes each distance once (symmetry) while the
-/// parallel path computes every row in full, so the parallel path starts to pay later.
-const SPACING_PAR_MIN_WORK: usize = 1 << 19;
+/// Serial ns per distance of GD and IGD with `m` objectives, and per pair of points and objective
+/// of Spacing, as `pool_sized` expects. Set below the serial cost measured alone (the parallel
+/// path loses some speed to efficiency cores and lower clocks), so that no size of a grid of 64
+/// runs slower in parallel with the workers asleep (`scripts/bench/threads_grid.py`): on an M2 Pro
+/// for aarch64, on an i9-13900H laptop and a Xeon Silver 4310 server for x86_64, where these loops
+/// run 1.3-3.6 times slower.
+#[cfg(not(target_arch = "x86_64"))]
+fn distance_ns(m: usize) -> f64 {
+    0.8 + 0.1 * m as f64
+}
+#[cfg(target_arch = "x86_64")]
+fn distance_ns(m: usize) -> f64 {
+    1.6 + 0.3 * m as f64
+}
+#[cfg(not(target_arch = "x86_64"))]
+const SPACING_PAIR_NS: f64 = 0.15;
+#[cfg(target_arch = "x86_64")]
+const SPACING_PAIR_NS: f64 = 0.4;
 
 /// Euclidean distance summed left to right like geatpy 2.7.0's `_cdist_eu` (0.0 for no columns).
 fn dist(a: &Array2<f64>, i: usize, b: &Array2<f64>, k: usize) -> f64 {
@@ -69,7 +81,7 @@ fn sum_nearest(a: &Array2<f64>, b: &Array2<f64>, term: impl Fn(f64) -> f64) -> f
         };
         return if n == 0 { 0.0 } else { term(d) * n as f64 };
     }
-    match crate::parallel::pool_for(n * b.shape()[0] * m, INDICATOR_PAR_MIN_WORK) {
+    match crate::parallel::pool_sized(n.saturating_mul(b.shape()[0]), distance_ns(m)) {
         Some(pool) => crate::parallel::map_collect(Some(&pool), n, |i| nearest(a, i, b))
             .into_iter()
             .fold(0.0, |s, d| s + term(d)),
@@ -135,35 +147,23 @@ pub fn Spacing<'py>(
             "zero-size array to reduction operation minimum which has no identity",
         ));
     }
-    // np.min over each row of the distance matrix with an infinite diagonal (NaN propagates); a row
-    // of L1 distances is accumulated for all k at once from a column-major copy, so the loops over
-    // k vectorise (every distance is still the sum from 0.0 in order of j). With a pool every row is
-    // computed in full in parallel; on one thread the symmetry (|a - b| = |b - a|) halves the work:
-    // row i computes only k > i and updates the minima of both ends, a NaN distance tracked apart
-    // since f64::min skips NaN. Both give the same bits.
+    // np.min over each row of the distance matrix with an infinite diagonal (NaN propagates). By
+    // symmetry (|a - b| = |b - a|) row i computes only k > i and updates the minima of both ends,
+    // a NaN distance tracked apart since f64::min skips NaN. A row of L1 distances is accumulated
+    // for all k at once from a column-major copy, so the loops over k vectorise (every distance is
+    // still the sum from 0.0 in order of j). On the pool every piece of rows keeps its own minima,
+    // merged by min, which is exact: the result has the same bits for every number of threads.
     let pt = crate::utils::transpose(&p);
-    let pool = crate::parallel::pool_for(n * n * m, SPACING_PAR_MIN_WORK);
-    let d: Vec<f64> = if pool.is_some() {
-        crate::parallel::map_collect(pool.as_deref(), n, |i| {
-            let mut row = vec![0.0; n];
-            for (j, col) in pt.chunks_exact(n).enumerate().take(m) {
-                let x = p[[i, j]];
-                for (o, &y) in row.iter_mut().zip(col) {
-                    *o += (x - y).abs();
-                }
-            }
-            row[i] = f64::INFINITY;
-            if row.iter().any(|x| x.is_nan()) {
-                f64::NAN
-            } else {
-                row.iter().copied().fold(f64::INFINITY, f64::min)
-            }
-        })
-    } else {
-        let mut best = vec![f64::INFINITY; n];
-        let mut nan = vec![false; n];
-        let mut row = vec![0.0; n];
-        for i in 0..n {
+    let pool = crate::parallel::pool_sized(
+        n.saturating_mul(n - 1) / 2,
+        SPACING_PAIR_NS * m.max(1) as f64,
+    );
+    let init = || (vec![f64::INFINITY; n], vec![false; n], vec![0.0; n]);
+    let (best, nan, _) = crate::parallel::fold_merge(
+        pool.as_deref(),
+        n,
+        init,
+        |(mut best, mut nan, mut row), i| {
             let r = &mut row[i + 1..];
             r.fill(0.0);
             for (j, col) in pt.chunks_exact(n).enumerate().take(m) {
@@ -184,12 +184,21 @@ pub fn Spacing<'py>(
                 *b = b.min(d);
                 *f |= d.is_nan();
             }
-        }
-        best.iter()
-            .zip(&nan)
-            .map(|(&b, &f)| if f { f64::NAN } else { b })
-            .collect()
-    };
+            (best, nan, row)
+        },
+        |(mut best, mut nan, row), (b2, f2, _)| {
+            for ((b, f), (&b2, &f2)) in best.iter_mut().zip(&mut nan).zip(b2.iter().zip(&f2)) {
+                *b = b.min(b2);
+                *f |= f2;
+            }
+            (best, nan, row)
+        },
+    );
+    let d: Vec<f64> = best
+        .iter()
+        .zip(&nan)
+        .map(|(&b, &f)| if f { f64::NAN } else { b })
+        .collect();
     let np = py.import("numpy")?;
     let var = np.call_method1("var", (numpy::ndarray::Array1::from(d).into_pyarray(py),))?;
     let ratio = var.mul(n)?.div(n as i64 - 1)?;

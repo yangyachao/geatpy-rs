@@ -115,8 +115,9 @@ geatpy 2.7.0 的 Python 层原样保留，闭源 Cython 内核 `_core` 用 Rust 
   模块声明 `gil_used = false`，free-threaded 下内核函数可被多个线程同时调用：不要引入依赖 GIL 互斥的全局可变状态
   （需要时用 `Mutex`/`OnceLock` 或 PyO3 的 `PyOnceLock`）。
 - 随机数一律用 `crate::utils::rng()`（每次调用从 numpy 全局 RandomState 取种子，`np.random.seed` 才能复现），不要用 `thread_rng`。
-- 并行只拆分与切分方式无关的工作（每个任务算一行输出或一个候选），用 `crate::parallel::pool_for` 按工作量决定是否并行；
-  求和等归约在并行算出各项后按原顺序串行完成，保证与串行逐位一致。
+- 并行只拆分与切分方式无关的工作（每个任务算一行输出或一个候选），用 `crate::parallel::pool_sized(work, unit_ns)` 按预计
+  耗时选线程池（单位成本按 aarch64 / x86_64 分别标定，用 `scripts/bench/threads_grid.py` 在冷调用下确认不比单线程慢）；
+  求和等归约在并行算出各项后按原顺序串行完成（或用 `fold_merge` 做 min 这类精确合并），保证与串行逐位一致。
 - 性能优化只改实现、不改算法：每个基因/个体的概率与原版相同（例如 `mutbin` 用几何分布跳跃抽取变异位），改后用 fuzz 与
   `scripts/parity/classic.py` 确认分布与解质量不变。
 - 提交信息用英文 Conventional Commits；README 与设计文档用中文；Rust 注释用英文。

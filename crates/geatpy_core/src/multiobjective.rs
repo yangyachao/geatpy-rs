@@ -679,8 +679,12 @@ pub fn crowdis<'py>(
     Ok(dist.into_pyarray(py))
 }
 
-/// Output elements x dimensions from which cdist runs in parallel.
-const CDIST_PAR_MIN_WORK: usize = 1 << 18;
+/// Serial ns per output element and dimension of cdist, for `pool_sized` (calibrated like
+/// `indicator::distance_ns`).
+#[cfg(not(target_arch = "x86_64"))]
+const CDIST_NS: f64 = 0.12;
+#[cfg(target_arch = "x86_64")]
+const CDIST_NS: f64 = 0.32;
 
 /// Pairwise distances between the rows of A and B: 'euclidean', 'cityblock',
 /// 'cosine' (1 - cosine similarity) or 'cosine_similarity'.
@@ -734,7 +738,8 @@ pub fn cdist<'py>(
     );
     crate::utils::check_alloc(&[na, nb], 8, "float64")?;
     let mut out = Array2::<f64>::zeros((na, nb));
-    let pool = crate::parallel::pool_for(na * nb * dim.max(1), CDIST_PAR_MIN_WORK);
+    let pool =
+        crate::parallel::pool_sized(na.saturating_mul(nb).saturating_mul(dim.max(1)), CDIST_NS);
     let flat = out.as_slice_mut().expect("owned arrays are contiguous");
     match metric {
         "euclidean" => pairwise(
@@ -1088,9 +1093,12 @@ fn matmul_mismatch(mb: usize, m: usize) -> PyErr {
     ))
 }
 
-/// Multiply-adds from which `dot_matrix` runs in parallel: in refgselect the association and
-/// selection that follow stay serial, so the product alone has to outweigh the hand-off.
-const DOT_MATRIX_PAR_MIN_WORK: usize = 1 << 17;
+/// Serial ns per multiply-add of `dot_matrix`, for `pool_sized`: in refgselect the association
+/// and selection that follow stay serial, so the product alone has to outweigh the hand-off.
+#[cfg(not(target_arch = "x86_64"))]
+const DOT_MATRIX_NS: f64 = 0.25;
+#[cfg(target_arch = "x86_64")]
+const DOT_MATRIX_NS: f64 = 0.3;
 
 /// `f` applied to every entry of numpy `a @ b.T` (rows as in `matmul_row`; `a` and `b` have the
 /// same number of columns), computed by rows on the thread pool when the matrix is large. Every
@@ -1098,7 +1106,7 @@ const DOT_MATRIX_PAR_MIN_WORK: usize = 1 << 17;
 fn dot_matrix(a: &Array2<f64>, b: &Array2<f64>, f: impl Fn(f64) -> f64 + Sync) -> Array2<f64> {
     let (n, nb, d) = (a.shape()[0], b.shape()[0], a.shape()[1]);
     let mut out = Array2::<f64>::zeros((n, nb));
-    let pool = crate::parallel::pool_for(n * nb * d, DOT_MATRIX_PAR_MIN_WORK);
+    let pool = crate::parallel::pool_sized(n.saturating_mul(nb).saturating_mul(d), DOT_MATRIX_NS);
     let flat = out.as_slice_mut().expect("owned arrays are contiguous");
     crate::parallel::for_each_row(pool.as_deref(), flat, nb, |i, row| {
         matmul_row(a, i, b, row);
@@ -1210,8 +1218,12 @@ fn solve_linear(mut a: Array2<f64>, mut rhs: Vec<f64>) -> Option<Vec<f64>> {
     Some(x)
 }
 
-/// Candidates x reference points x objectives from which the association runs in parallel.
-const REFSELECT_PAR_MIN_WORK: usize = 1 << 16;
+/// Serial ns per candidate, reference point and objective of the association, for `pool_sized`
+/// (only the association runs in parallel).
+#[cfg(not(target_arch = "x86_64"))]
+const REFSELECT_NS: f64 = 0.5;
+#[cfg(target_arch = "x86_64")]
+const REFSELECT_NS: f64 = 0.45;
 
 /// NSGA-III environmental selection on the critical front (Deb & Jain). Individuals of the fronts
 /// before criLevel are all kept; the remaining quota is filled niche by niche: the least crowded
@@ -1359,7 +1371,10 @@ pub fn refselect<'py>(
         });
         (best, (sq_norm(c.row(r)) * cm).sqrt())
     };
-    let pool = crate::parallel::pool_for(rows.len() * nz * m, REFSELECT_PAR_MIN_WORK);
+    let pool = crate::parallel::pool_sized(
+        rows.len().saturating_mul(nz).saturating_mul(m),
+        REFSELECT_NS,
+    );
     let (pi, d): (Vec<usize>, Vec<f64>) =
         crate::parallel::map_collect_init(pool.as_deref(), rows.len(), || vec![0.0; nz], assoc)
             .into_iter()
