@@ -70,8 +70,8 @@ pip install .
 ```
 
 构建完成后产物位于 `dist/` 目录下：
-- `dist/geatpy_rs-2.8.0b2-cp38-abi3-<platform>_<arch>.whl`：针对该操作系统的二进制 Wheel。
-- `dist/geatpy_rs-2.8.0b2.tar.gz`：通用的源码分发包 (sdist)。
+- `dist/geatpy_rs-2.8.0b3-cp38-abi3-<platform>_<arch>.whl`：针对该操作系统的二进制 Wheel。
+- `dist/geatpy_rs-2.8.0b3.tar.gz`：通用的源码分发包 (sdist)。
 
 > **特性说明**：由于开启了 Python **abi3-py38** 特性，编译出的单个二进制 Wheel 可直接在 **Python 3.8、3.9、3.10、3.11、3.12、3.13、3.14、3.15** 下直接加载运行，无需针对每个 Python 小版本分别编译。
 >

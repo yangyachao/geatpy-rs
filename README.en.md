@@ -52,8 +52,11 @@ platform that work on Python 3.8 – 3.15.
 > **Threads**: the default is the number of logical CPUs (a larger setting is capped at it). When several geatpy
 > processes run at once (batch jobs, `multiprocessing`, `ProcessPoolExecutor`, joblib), set `GEATPY_NUM_THREADS=1` or
 > call `ea.set_num_threads(1)` in each of them (or give each process cores / processes threads); otherwise the threads
-> compete for the cores and run slower. Every worker thread reserves about 66 MB of virtual address space, so under
-> `ulimit -v` use one thread or set `MALLOC_ARENA_MAX=1`. "Bit-identical to one thread" assumes the default
+> compete for the cores and run slower. Whether a call runs in parallel, and on how many threads, is chosen from its
+> expected time (small and medium inputs stay on one thread); on Linux and Windows a process measures the cost of waking
+> the threads once, the first time a call could go parallel (about 0.3 s). Besides the pool of every thread there are
+> pools of 2, 4, 8, ... threads, so there are up to 2-3 times as many idle worker threads as threads; each reserves about
+> 66 MB of virtual address space, so under `ulimit -v` use one thread or set `MALLOC_ARENA_MAX=1`. "Bit-identical to one thread" assumes the default
 > floating-point environment: if another library turns on flush-to-zero (e.g. `torch.set_flush_denormal(True)`),
 > input with subnormal numbers may give different results on several threads.
 
@@ -151,7 +154,7 @@ pip install geatpy-rs
 >
 > On free-threaded (no-GIL) Python 3.14t, `pip install geatpy-rs` works the same way and picks the `cp314t` wheel.
 
-> 🧪 **Preview**: 2.8.0b2 is the multithreading preview (no GPU support). `pip install` still installs the 2.7.6 stable
+> 🧪 **Preview**: 2.8.0b3 is the multithreading preview (no GPU support). `pip install` still installs the 2.7.6 stable
 > release; add `--pre` to try it: `pip install --pre geatpy-rs`.
 
 ### Option 2: prebuilt wheels from GitHub Releases

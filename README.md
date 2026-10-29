@@ -45,7 +45,9 @@ The High-Performance Genetic and Evolutionary Algorithm Toolbox for Python, Powe
 
 > **多线程说明**：默认线程数为逻辑 CPU 数（设置的线程数也不会超过它）。同时运行多个 geatpy 进程时（批量任务、
 > `multiprocessing`、`ProcessPoolExecutor`、joblib），请在每个进程中设 `GEATPY_NUM_THREADS=1` 或调用
-> `ea.set_num_threads(1)`（或给每个进程“核数 / 进程数”个线程），否则线程争抢核心反而更慢。每个工作线程会预留约
+> `ea.set_num_threads(1)`（或给每个进程“核数 / 进程数”个线程），否则线程争抢核心反而更慢。是否并行、用几个线程，
+> 按每次调用的预计耗时自动选择（中小规模保持单线程）；Linux、Windows 上进程第一次可能并行时会实测一次线程唤醒开销
+> （约 0.3 s）。除全部线程外还有 2、4、8…线程的小线程池，空闲的工作线程最多约为线程数的 2～3 倍，每个预留约
 > 66 MB 虚拟地址空间，在 `ulimit -v` 限制下请用 1 个线程或设 `MALLOC_ARENA_MAX=1`。“与单线程逐位一致”以默认浮点环境
 > 为前提：若其他库打开了 flush-to-zero（如 `torch.set_flush_denormal(True)`），含次正规数的输入在多线程下可能不同。
 
@@ -126,7 +128,7 @@ pip install geatpy-rs
 >
 > free-threaded（无 GIL）的 Python 3.14t 上同样 `pip install geatpy-rs`，pip 会自动选择 `cp314t` 的 Wheel。
 
-> 🧪 **预览版**：2.8.0b2 是多线程预览版（不含 GPU），`pip install` 默认仍安装 2.7.6 稳定版，试用请加 `--pre`：
+> 🧪 **预览版**：2.8.0b3 是多线程预览版（不含 GPU），`pip install` 默认仍安装 2.7.6 稳定版，试用请加 `--pre`：
 > `pip install --pre geatpy-rs`。
 
 ### 方式二：从 GitHub Releases 下载预编译 Wheel
