@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+
 import numpy as np
 import pytest
 
@@ -82,3 +85,47 @@ def test_Problem_evaluation_with_aimFunc_and_evalVars(
                              evalVars=eval_function)
     problem.evaluation(pop)
     assert np.array_equal(pop.ObjV, [[10]])
+
+
+def test_reference_cache_is_published_after_write(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    started = Event()
+    finish = Event()
+    savetxt = np.savetxt
+
+    def pause_first_write(stream, values, **kwargs):
+        if started.is_set():
+            return savetxt(stream, values, **kwargs)
+        savetxt(stream, values[:2], **kwargs)
+        stream.flush()
+        started.set()
+        assert finish.wait(10)
+        savetxt(stream, values[2:], **kwargs)
+
+    monkeypatch.setattr(np, 'savetxt', pause_first_write)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(geatpy.benchmarks.DTLZ2)
+        try:
+            assert started.wait(10)
+            second = geatpy.benchmarks.DTLZ2()
+        finally:
+            finish.set()
+        np.testing.assert_array_equal(second.ReferObjV, first.result().ReferObjV)
+    assert len(list((tmp_path / 'referenceObjV').iterdir())) == 1
+
+
+def test_failed_reference_cache_write_keeps_previous_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    problem = geatpy.benchmarks.DTLZ2()
+    cache, = (tmp_path / 'referenceObjV').iterdir()
+    original = cache.read_bytes()
+
+    def fail_write(stream, *_args, **_kwargs):
+        stream.write('partial data')
+        raise OSError('write failed')
+
+    monkeypatch.setattr(np, 'savetxt', fail_write)
+    with pytest.raises(OSError, match='write failed'):
+        problem.getReferObjV(reCalculate=True)
+    assert cache.read_bytes() == original
+    assert list(cache.parent.iterdir()) == [cache]
