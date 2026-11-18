@@ -57,8 +57,10 @@ def run(f, reps):
         return rec
     L0 = {}
     leaves(r0, L0)
-    s1 = {k: np.zeros(np.shape(v)) for k, v in L0.items()}
-    s2 = {k: np.zeros(np.shape(v)) for k, v in L0.items()}
+    means = {k: np.zeros(np.shape(v)) for k, v in L0.items()}
+    m2 = {k: np.zeros(np.shape(v)) for k, v in L0.items()}
+    finite_counts = {k: np.zeros(np.shape(v), dtype=int) for k, v in L0.items()}
+    special = {}
     varied, shapes_ok, n = False, True, 0
     for _ in range(reps):
         r = f()
@@ -71,17 +73,30 @@ def run(f, reps):
         n += 1
         for k in L0:
             v = np.asarray(L[k], dtype=float)
-            if not varied and not np.array_equal(v, np.asarray(L0[k], dtype=float), ):
-                if not (np.isnan(v).any() and np.array_equal(np.isnan(v), np.isnan(np.asarray(L0[k], float)))):
-                    varied = True
-            v = np.nan_to_num(v)
-            s1[k] += v
-            s2[k] += v * v
+            first = L0[k]
+            if not varied:
+                varied = not np.all((v == first) | (np.isnan(v) & np.isnan(first)))
+            finite = np.isfinite(v)
+            if not finite.all():
+                if k not in special:
+                    special[k] = np.zeros((3,) + v.shape, dtype=int)
+                special[k] += [np.isnan(v), np.isposinf(v), np.isneginf(v)]
+            finite_counts[k] += finite
+            # Welford's population variance, conditional on a finite observation.
+            delta = np.where(finite, v, means[k]) - means[k]
+            means[k] += delta / np.maximum(finite_counts[k], 1)
+            m2[k] += delta * (np.where(finite, v, means[k]) - means[k])
     rec['varied'] = varied
     rec['shapes_stable'] = shapes_ok
     if varied and n:
-        rec['stat'] = {k: {'n': n, 'mean': (s1[k] / n).ravel().tolist(),
-                           'var': (s2[k] / n - (s1[k] / n) ** 2).ravel().tolist()} for k in L0}
+        rec['stat'] = {}
+        for k in L0:
+            count = finite_counts[k]
+            stat = {'n': n, 'mean': means[k].ravel().tolist(),
+                    'var': (m2[k] / np.maximum(count, 1)).ravel().tolist()}
+            if k in special:
+                stat['special'] = [a.ravel().tolist() for a in special[k]]
+            rec['stat'][k] = stat
     return rec
 
 

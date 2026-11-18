@@ -70,9 +70,21 @@ for n, a in A.items():
         p, q = a['stat'][k], b['stat'].get(k)
         if q is None or len(p['mean']) != len(q['mean']): out['stat-shape'].append(n); break
         m1, m2 = np.array(p['mean']), np.array(q['mean'])
-        se = np.sqrt(np.array(p['var']) / p['n'] + np.array(q['var']) / q['n']) + 1e-12
-        z = np.abs(m1 - m2) / se
-        zero_var = (np.array(p['var']) < 1e-15) & (np.array(q['var']) < 1e-15) & (np.abs(m1 - m2) > 1e-9)
+        if not m1.size: continue
+        # Older files have no special counts; their n is the finite sample size.
+        sp = np.asarray(p.get('special', np.zeros((3, m1.size))))
+        sq = np.asarray(q.get('special', np.zeros((3, m2.size))))
+        fp, fq = sp / p['n'], sq / q['n']
+        rate_se = np.sqrt(fp * (1 - fp) / p['n'] + fq * (1 - fq) / q['n'])
+        if np.any(np.abs(fp - fq) > Z * rate_se + 1e-12):
+            out['stat'].append('%s%s: nonfinite sample frequencies differ' % (n, k))
+            break
+        n1, n2 = p['n'] - sp.sum(axis=0), q['n'] - sq.sum(axis=0)
+        valid = (n1 > 0) & (n2 > 0)
+        v1, v2 = np.maximum(p['var'], 0), np.maximum(q['var'], 0)
+        se = np.sqrt(v1 / np.maximum(n1, 1) + v2 / np.maximum(n2, 1)) + 1e-12
+        z = np.where(valid, np.abs(m1 - m2) / se, 0)
+        zero_var = valid & (v1 < 1e-15) & (v2 < 1e-15) & (np.abs(m1 - m2) > 1e-9)
         if z.max() > Z or zero_var.any():
             i = int(np.argmax(z if not zero_var.any() else zero_var))
             out['stat'].append('%s%s: max z=%.1f at %d (orig mean %.4f, rust %.4f) [%d/%d elems > %g]' % (n, k, z.max(), i, m1[i], m2[i], int((z > Z).sum()), len(z), Z))
