@@ -45,3 +45,17 @@ def test_no_feasible_solution_reports_the_violated_constraints():
     assert 'Could not find any feasible solution.' in out
     assert 'CV[:, 0]: 20/20 individuals violate it' in out
     assert 'CV[:, 1]: ' in out and 'needs a tolerance' in out
+
+
+@pytest.mark.parametrize('with_reference', [False, True])
+def test_hypervolume_uses_objective_directions_and_reference(tmp_path, monkeypatch, with_reference):
+    monkeypatch.chdir(tmp_path)
+    for sign in (1, -1):
+        p = ea.Problem(str(sign), 2, [1, sign], 1, [0], [0], [1],
+                       evalVars=lambda x: np.hstack([x, sign * (1 - x**2)]))
+        reference = np.array([[2., 2.]]) if with_reference else None
+        p.ReferObjV = None if reference is None else reference * [1, sign]
+        alg = ea.moea_NSGA2_templet(p, ea.Population('RI', NIND=16), MAXGEN=1, logTras=1)
+        result, _ = _optimize(alg, outputMsg=False)
+        expected = ea.indicator.HV(result['ObjV'] * [1, sign], reference)
+        assert result['hv'] == alg.log['hv'][-1] == expected

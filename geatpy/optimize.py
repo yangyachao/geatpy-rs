@@ -4,6 +4,7 @@ import os
 import time
 import numpy as np
 import geatpy as ea
+from .Algorithm import _hypervolume
 
 
 def optimize(algorithm,
@@ -125,7 +126,7 @@ def optimize(algorithm,
             result['gd'] = GD
             IGD = ea.indicator.IGD(optPop.ObjV, algorithm.problem.ReferObjV)
             result['igd'] = IGD
-        HV = ea.indicator.HV(optPop.ObjV)
+        HV = _hypervolume(algorithm.problem, optPop.ObjV)
         result['hv'] = HV
         Spacing = ea.indicator.Spacing(optPop.ObjV)
         result['spacing'] = Spacing
