@@ -33,8 +33,12 @@ def close(a, b):
         if isinstance(x, str) or isinstance(y, str):
             if x != y: return False
             continue
+        if x is None or y is None:
+            if x is not y: return False
+            continue
         if np.isnan(x) and np.isnan(y): continue
         if x == y: continue
+        if not (math.isfinite(x) and math.isfinite(y)): return False
         if not abs(x - y) <= 1e-9 * max(1, abs(x), abs(y)): return False
     return True
 out = collections.defaultdict(list)
@@ -42,7 +46,9 @@ for n, a in A.items():
     b = B.get(n)
     if b is None: out['missing'].append(n); continue
     if a['status'] != 'ok' or b['status'] != 'ok':
-        if a['status'] != b['status']:
+        different_error = (a['status'] == b['status'] == 'error' and
+                           a.get('error', '').split() != b.get('error', '').split())
+        if a['status'] != b['status'] or different_error:
             out['status'].append('%s: orig=%s rust=%s' % (n, a.get('error', a['status'])[:110], b.get('error', b['status'])[:110]))
         continue
     sa, sb = struct(a['value']), struct(b['value'])
@@ -54,7 +60,7 @@ for n, a in A.items():
     if not va:
         if not close(vals(a['value']), vals(b['value'])):
             x, y = vals(a['value']), vals(b['value'])
-            out['value'].append('%s:\n     orig=%s\n     rust=%s' % (n, np.round(np.array(x, float), 4).tolist()[:16] if len(x) else x, np.round(np.array(y, float), 4).tolist()[:16] if len(y) else y))
+            out['value'].append('%s:\n     orig=%s\n     rust=%s' % (n, x[:16], y[:16]))
         continue
     if not (a.get('shapes_stable') and b.get('shapes_stable')):
         if a.get('shapes_stable') != b.get('shapes_stable'):
