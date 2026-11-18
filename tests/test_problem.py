@@ -1,3 +1,4 @@
+import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
@@ -151,3 +152,16 @@ def test_reference_cache_preserves_matrix_shape(tmp_path, monkeypatch, values):
     np.savetxt(cache, np.zeros((2, objectives + 1)), delimiter=',')
     np.testing.assert_array_equal(create_problem().ReferObjV, values)
     np.testing.assert_array_equal(np.loadtxt(cache, delimiter=',', ndmin=2), values)
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='POSIX file modes')
+def test_reference_cache_preserves_permissions(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    probe = tmp_path / 'normal-file'
+    probe.touch(mode=0o666)
+    p = geatpy.benchmarks.Rastrigrin(3)
+    cache, = (tmp_path / 'referenceObjV').iterdir()
+    assert cache.stat().st_mode == probe.stat().st_mode
+    cache.chmod(0o664)
+    p.getReferObjV(reCalculate=True)
+    assert cache.stat().st_mode & 0o777 == 0o664

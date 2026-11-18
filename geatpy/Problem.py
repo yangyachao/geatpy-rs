@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 import os
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from tempfile import TemporaryDirectory
+from stat import S_IMODE
 
 import numpy as np
 
@@ -251,13 +252,17 @@ class Problem:
                     ')函数的代码，假如没有目标函数参考值，则在问题类中不需要定义calReferObjV()函数。)')
             # 保存数据
             cache_dir.mkdir(exist_ok=True)
-            temp = NamedTemporaryFile(mode='w', dir=cache_path.parent, delete=False)
-            try:
-                with temp:
-                    np.savetxt(temp, referenceObjV, delimiter=',')
-                os.replace(temp.name, cache_path)
-            finally:
-                Path(temp.name).unlink(missing_ok=True)
+            with TemporaryDirectory(dir=cache_path.parent) as staging:
+                pending = Path(staging) / 'reference.csv'
+                with pending.open('w') as stream:
+                    np.savetxt(stream, referenceObjV, delimiter=',')
+                try:
+                    mode = cache_path.stat().st_mode
+                except FileNotFoundError:
+                    pass  # A newly created cache already follows the process umask.
+                else:
+                    pending.chmod(S_IMODE(mode))
+                os.replace(pending, cache_path)
         self.ReferObjV = referenceObjV
         return referenceObjV
 

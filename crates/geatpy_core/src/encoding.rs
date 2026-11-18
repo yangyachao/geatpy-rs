@@ -4,18 +4,10 @@ use pyo3::prelude::*;
 use rand::seq::SliceRandom;
 use rand::Rng;
 
-/// Per-variable list argument (precisions, codes, scales) with a default for missing entries.
+/// Per-variable list argument (precisions, codes, scales) with defaults only when the argument is omitted.
 fn list_arg(obj: Option<&Bound<'_, PyAny>>, d: usize, default: f64) -> PyResult<Vec<f64>> {
     match obj {
-        Some(o) if !o.is_none() => {
-            let v = crate::utils::to_f64_array2(o)?
-                .iter()
-                .cloned()
-                .collect::<Vec<f64>>();
-            Ok((0..d)
-                .map(|j| v.get(j).copied().unwrap_or(default))
-                .collect())
-        }
+        Some(o) if !o.is_none() => Ok(crate::utils::to_f64_array2(o)?.iter().copied().collect()),
         _ => Ok(vec![default; d]),
     }
 }
@@ -76,6 +68,23 @@ pub fn crtfld<'py>(
         _ => (vec![1.0; d], vec![1.0; d]),
     };
     let prec = list_arg(precisions, d, 4.0)?;
+    if encoding != "P" && prec.iter().any(|&p| p < 0.0) {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            if encoding == "BG" {
+                "error in crtfld: The elements of precisions must not be smaller than 0 when using binary/gray-code. (当使用二进制/格雷码编码时，决策变量的精度矩阵precisions的元素必须不小于0。)"
+            } else {
+                "error in crtfld: The elements of precisions must not be smaller than 0. (输入参数precisions的元素必须不小于0。)"
+            },
+        ));
+    }
+    let precision = |j: usize| {
+        prec.get(j).copied().ok_or_else(|| {
+            pyo3::exceptions::PyIndexError::new_err(format!(
+                "index {j} is out of bounds for axis 0 with size {}",
+                prec.len()
+            ))
+        })
+    };
     let mut lb = ranges.row(0).to_vec();
     let mut ub = ranges.row(1).to_vec();
     for j in 0..d {
@@ -97,8 +106,8 @@ pub fn crtfld<'py>(
             };
             lbin[j] = 1.0;
             ubin[j] = 1.0;
-        } else if encoding != "BG" {
-            let shrink = 0.1f64.powf(prec[j]);
+        } else if encoding != "BG" && (lbin[j] == 0.0 || ubin[j] == 0.0) {
+            let shrink = 0.1f64.powf(precision(j)?);
             if lbin[j] == 0.0 {
                 lb[j] += shrink;
             }
@@ -136,7 +145,7 @@ pub fn crtfld<'py>(
         let count = if vt[j] == 1.0 {
             ub[j] - lb[j] + 1.0
         } else {
-            (ub[j] - lb[j]) * 10f64.powf(prec[j]) + 1.0
+            (ub[j] - lb[j]) * 10f64.powf(precision(j)?) + 1.0
         };
         res[[0, j]] = count.log2().ceil().max(1.0);
         if res[[0, j]] > 31.0 {
@@ -146,11 +155,19 @@ pub fn crtfld<'py>(
         }
         res[[1, j]] = lb[j];
         res[[2, j]] = ub[j];
-        res[[3, j]] = codes[j];
-        res[[4, j]] = scales[j];
         res[[5, j]] = lbin[j];
         res[[6, j]] = ubin[j];
         res[[7, j]] = vt[j];
+    }
+    for (row, values) in [(3, codes), (4, scales)] {
+        if values.len() != d {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "all the input array dimensions for the concatenation axis must match exactly, but along dimension 1, the array at index 0 has size {d} and the array at index {row} has size {}", values.len()
+            )));
+        }
+        for (cell, value) in res.row_mut(row).iter_mut().zip(values) {
+            *cell = value;
+        }
     }
     Ok(res.into_pyarray(py))
 }
@@ -813,14 +830,27 @@ pub fn crtup<'py>(
     num: Option<usize>,
     div: Option<usize>,
 ) -> PyResult<(Bound<'py, PyArray2<f64>>, usize)> {
+    let invalid_count = |name: &str| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+        "error in crtup: {name} must be an int number which is bigger than 0 when it it not None. (当参数{name}非None时，它必须是一个大于0的int型整数。)"
+    ))
+    };
+    if div == Some(0) {
+        return Err(invalid_count("Div"));
+    }
+    match (num, div) {
+        (Some(_), Some(_)) => return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "error in crtup: NUM must be None when Div is not None. (当参数Div非None时，参数NUM必须为空。)"
+        )),
+        (None, None) => return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "error in crtup: One of the NUM and Div must not be None. (当参数NUM和参数Div必须不能同时为空。)"
+        )),
+        (Some(0), None) => return Err(invalid_count("NUM")),
+        _ => {}
+    }
     if dim == 0 {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
             "error in crtup: Dim must be positive.",
-        ));
-    }
-    if num.is_some() == div.is_some() {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "error in crtup: exactly one of NUM and Div must be given. (NUM和Div必须且只能传入一个。)",
         ));
     }
     if dim == 1 {
