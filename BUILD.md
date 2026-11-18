@@ -91,7 +91,7 @@ twine upload dist/*
 项目配置了完整的自动化构建流程：
 1. **持续集成 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))**：
    - Rust fmt / clippy（含测试代码）与单元测试（Ubuntu x86_64、macOS arm64），并在 Ubuntu、macOS、Windows 上测试 Python 3.8 至 3.15。
-   - 平时推送不运行，只在发布时由发布流水线调用；也可以在 Actions 页面手动运行（Run workflow）。
+   - 仅在推送 `v*` 发布标签时由发布流水线调用。普通分支推送和 PR 不触发 CI。
 2. **多平台发布流水线 ([`.github/workflows/release.yml`](.github/workflows/release.yml))**：
    - 当向仓库推送标签（如 `git push origin v2.7.6`）时自动启动，先运行上面的 CI，全部通过后才发布。
    - 自动化跨平台编译构建：
