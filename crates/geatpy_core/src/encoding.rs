@@ -830,14 +830,27 @@ pub fn crtup<'py>(
     num: Option<usize>,
     div: Option<usize>,
 ) -> PyResult<(Bound<'py, PyArray2<f64>>, usize)> {
+    let invalid_count = |name: &str| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+        "error in crtup: {name} must be an int number which is bigger than 0 when it it not None. (当参数{name}非None时，它必须是一个大于0的int型整数。)"
+    ))
+    };
+    if div == Some(0) {
+        return Err(invalid_count("Div"));
+    }
+    match (num, div) {
+        (Some(_), Some(_)) => return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "error in crtup: NUM must be None when Div is not None. (当参数Div非None时，参数NUM必须为空。)"
+        )),
+        (None, None) => return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "error in crtup: One of the NUM and Div must not be None. (当参数NUM和参数Div必须不能同时为空。)"
+        )),
+        (Some(0), None) => return Err(invalid_count("NUM")),
+        _ => {}
+    }
     if dim == 0 {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
             "error in crtup: Dim must be positive.",
-        ));
-    }
-    if num.is_some() == div.is_some() {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "error in crtup: exactly one of NUM and Div must be given. (NUM和Div必须且只能传入一个。)",
         ));
     }
     if dim == 1 {
