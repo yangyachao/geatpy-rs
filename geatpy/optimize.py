@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from itertools import count
 import os
 import time
 import numpy as np
@@ -76,13 +77,21 @@ def optimize(algorithm,
 
     startTime = time.strftime("%Y-%m-%d %Hh-%Mm-%Ss", time.localtime())  # 记录程序开始时间
     if dirName is None:
-        dirName = 'result of job ' + str(startTime)
+        base = 'result of job ' + startTime
+        dirName = base
+        if saveFlag:
+            for suffix in count():
+                dirName = base if suffix == 0 else f'{base} ({suffix})'
+                try:
+                    os.mkdir(dirName)
+                    break
+                except FileExistsError:
+                    continue
+    elif saveFlag and dirName:
+        os.makedirs(dirName, exist_ok=True)
     if dirName != '':
         dirName += '/'
     if saveFlag:
-        if dirName != '':
-            if not os.path.exists(dirName):
-                os.makedirs(dirName)
         algorithm.dirName = dirName  # 只有在设置了saveFlag=True时，才让algorithm的dirName同步成一致。
     if seed is not None:
         np.random.seed(seed)

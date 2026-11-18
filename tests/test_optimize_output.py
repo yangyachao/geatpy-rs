@@ -59,3 +59,12 @@ def test_hypervolume_uses_objective_directions_and_reference(tmp_path, monkeypat
         result, _ = _optimize(alg, outputMsg=False)
         expected = ea.indicator.HV(result['ObjV'] * [1, sign], reference)
         assert result['hv'] == alg.log['hv'][-1] == expected
+
+
+def test_same_second_default_outputs_have_separate_directories(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr('time.strftime', lambda *_: 'same-second')
+    for _ in range(2):
+        alg = ea.moea_NSGA2_templet(ZDT1(), ea.Population('RI', NIND=10), MAXGEN=1)
+        ea.optimize(alg, verbose=False, drawing=0, drawLog=False, outputMsg=False)
+    assert len(list(tmp_path.glob('result of job */result info.txt'))) == 2
