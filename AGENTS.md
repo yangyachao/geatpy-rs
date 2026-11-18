@@ -69,6 +69,8 @@ geatpy 2.7.0 的 Python 层原样保留，闭源 Cython 内核 `_core` 用 Rust 
   - FieldDR 上下界反序或含 NaN：截断修复与原版一样先比下界、再比上界（NaN 边界不越过）；`crtrp`/`crtri` 的实数变量
     与原版一样取 lb + u·|ub - lb|（区间为 inf/NaN 时得 inf/NaN）；`crtip`/`crtri` 的整数变量反序时 Rust 取 ceil(lb)
     （原版是 lb 以上的随机整数）。
+- Python 层修正的原版缺陷（2026-11-18）：多目标日志与最终结果按 `maxormins` 将目标和参考前沿统一为最小化后计算 HV；
+  两处共用问题给出的参考前沿。同一秒内多次调用 `optimize` 且启用默认保存时，每次独占一个结果目录。
 - Python 层修正的原版缺陷（2026-10-28）：切片 `pop[a:b:c]` 的个体数按实际选中的行计算（原版 `pop[:]` 报 TypeError、
   `pop[:-1]` 报错、越界的 stop 记成错误的 sizes）；`__setitem__` 在 Phen 为 None 时不再报错；`PsyPopulation.initChrom`
   重复调用不再累加 Linds；`PsyPopulation.shuffle` 在 Encodings 为 None 时不再报错；`PsyPopulation` 逐个复制 Fields，
