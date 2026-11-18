@@ -129,3 +129,25 @@ def test_failed_reference_cache_write_keeps_previous_file(tmp_path, monkeypatch)
         problem.getReferObjV(reCalculate=True)
     assert cache.read_bytes() == original
     assert list(cache.parent.iterdir()) == [cache]
+
+
+@pytest.mark.parametrize('values', [[[1], [2], [3]], [[1, 2, 3]]])
+def test_reference_cache_preserves_matrix_shape(tmp_path, monkeypatch, values):
+    monkeypatch.chdir(tmp_path)
+    values = np.array(values, dtype=float)
+    objectives = values.shape[1]
+
+    def reference():
+        return values
+
+    def create_problem():
+        return geatpy.Problem('test', objectives, [1] * objectives, 1,
+                              [0], [0], [1], calReferObjV=reference)
+
+    np.testing.assert_array_equal(create_problem().ReferObjV, values)
+    np.testing.assert_array_equal(create_problem().ReferObjV, values)
+
+    cache, = (tmp_path / 'referenceObjV').iterdir()
+    np.savetxt(cache, np.zeros((2, objectives + 1)), delimiter=',')
+    np.testing.assert_array_equal(create_problem().ReferObjV, values)
+    np.testing.assert_array_equal(np.loadtxt(cache, delimiter=',', ndmin=2), values)

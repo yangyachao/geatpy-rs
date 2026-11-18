@@ -233,12 +233,13 @@ class Problem:
         """
         cache_dir = Path('referenceObjV')
         cache_path = Path(f'referenceObjV/{self.name}_M{self.M}_D{self.Dim}.csv')
-        if not reCalculate:
-            if self.calReferObjV.__module__ != 'geatpy.Problem':
-                # 尝试读取数据
-                if cache_path.exists():
-                    return np.atleast_2d(np.loadtxt(cache_path, delimiter=','))
-        # 若找不到数据，则调用calReferObjV()计算目标函数参考值
+        if (not reCalculate
+                and self.calReferObjV.__module__ != 'geatpy.Problem'
+                and cache_path.exists()):
+            cached = np.loadtxt(cache_path, delimiter=',', ndmin=2)
+            if cached.shape[1] == self.M:
+                return cached
+        # 缓存缺失或列数不符时重新计算目标函数参考值
         referenceObjV = self.calReferObjV()
         if referenceObjV is not None:
             # 简单检查referenceObjV的合法性
