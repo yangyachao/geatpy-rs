@@ -669,3 +669,18 @@ def test_crtpc_bg_checks_the_code_length(lens, exc, msg):
 def test_crtgp_needs_two_points_per_axis(dim, num):
     with pytest.raises(RuntimeError, match='The NUM is too small to build a grid'):
         ea.crtgp(dim, num)
+
+
+def test_crtfld_explicit_precision_and_code_lengths():
+    vt = np.array([0, 0])
+    field = np.array([[1., 1.], [4., 4.]])
+    borders = np.ones((2, 2))
+    for mode in ('RI', 'BG'):
+        with pytest.raises(RuntimeError, match='precisions must not be smaller'):
+            ea.crtfld(mode, vt, field, borders, [-1, 4])
+    with pytest.raises(IndexError, match='index 1 is out of bounds'):
+        ea.crtfld('BG', vt, field, borders, [4])
+    assert ea.crtfld('RI', vt, field, borders, [4]).shape == (3, 2)
+    for codes, scales, row in [([0], [0, 0], 3), ([0, 0], [0], 4)]:
+        with pytest.raises(ValueError, match=f'index {row} has size 1'):
+            ea.crtfld('BG', vt, field, borders, [4, 4], codes, scales)
