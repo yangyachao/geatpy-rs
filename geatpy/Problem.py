@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 import numpy as np
 
@@ -229,19 +231,15 @@ class Problem:
         输出参数:
             referenceObjV : array - 存储着目标函数参考值的矩阵，每一行对应一组目标函数参考值，每一列对应一个目标函数。
         """
-        if not reCalculate:
-            if self.calReferObjV.__module__ != 'geatpy.Problem':
-                # 尝试读取数据
-                if os.path.exists('referenceObjV'):
-                    if os.path.exists('referenceObjV/' + self.name + '_M'
-                                      + str(self.M) + '_D' + str(self.Dim)
-                                      + '.csv'):
-                        return np.atleast_2d(
-                            np.loadtxt(
-                                'referenceObjV/' + self.name + '_M'
-                                + str(self.M) + '_D' + str(self.Dim) + '.csv',
-                                delimiter=','))
-        # 若找不到数据，则调用calReferObjV()计算目标函数参考值
+        cache_dir = Path('referenceObjV')
+        cache_path = Path(f'referenceObjV/{self.name}_M{self.M}_D{self.Dim}.csv')
+        if (not reCalculate
+                and self.calReferObjV.__module__ != 'geatpy.Problem'
+                and cache_path.exists()):
+            cached = np.loadtxt(cache_path, delimiter=',', ndmin=2)
+            if cached.shape[1] == self.M:
+                return cached
+        # 缓存缺失或列数不符时重新计算目标函数参考值
         referenceObjV = self.calReferObjV()
         if referenceObjV is not None:
             # 简单检查referenceObjV的合法性
@@ -252,13 +250,14 @@ class Problem:
                     'error: ReferenceObjV is illegal. (目标函数参考值矩阵的数据格式不合法，请检查自定义问题类中的calReferObjV('
                     ')函数的代码，假如没有目标函数参考值，则在问题类中不需要定义calReferObjV()函数。)')
             # 保存数据
-            if not os.path.exists('referenceObjV'):
-                os.makedirs('referenceObjV')
-            np.savetxt(
-                'referenceObjV/' + self.name + '_M' + str(self.M) + '_D'
-                + str(self.Dim) + '.csv',
-                referenceObjV,
-                delimiter=',')
+            cache_dir.mkdir(exist_ok=True)
+            temp = NamedTemporaryFile(mode='w', dir=cache_path.parent, delete=False)
+            try:
+                with temp:
+                    np.savetxt(temp, referenceObjV, delimiter=',')
+                os.replace(temp.name, cache_path)
+            finally:
+                Path(temp.name).unlink(missing_ok=True)
         self.ReferObjV = referenceObjV
         return referenceObjV
 

@@ -1,9 +1,8 @@
 name: CI
 
-# Runs only as part of a release (called from release.yml) or by hand from the Actions tab.
+# Runs only when release.yml calls it for a release tag.
 on:
   workflow_call:
-  workflow_dispatch:
 
 jobs:
   rust-lint:
