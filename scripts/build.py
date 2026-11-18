@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 # Force UTF-8 stream handling if supported
 if hasattr(sys.stdout, "reconfigure"):
@@ -76,12 +77,30 @@ def repair_macos_linkedit():
         run_cmd([sys.executable, str(REPO_ROOT / "scripts" / "macos_fix_linkedit.py"), str(so)])
 
 
+def install_wheel(wheel):
+    in_venv = sys.prefix != sys.base_prefix
+    uv_bin = shutil.which("uv")
+    installed = False
+    if uv_bin:
+        res = run_cmd([uv_bin, "pip", "install", "--reinstall", "--no-deps", "--break-system-packages", str(wheel), "--python", sys.executable], check=False)
+        if res == 0:
+            installed = True
+    if not installed:
+        pip_cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", "--break-system-packages", str(wheel)]
+        if not in_venv:
+            pip_cmd.append("--user")
+        run_cmd(pip_cmd)
+    repair_macos_linkedit()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Geatpy cross-platform automated build tool")
     parser.add_argument("--install", "-i", action="store_true", help="Install built wheel to current environment")
     parser.add_argument("--test", "-t", action="store_true", help="Build, install and run pytest test suite")
     parser.add_argument("--sdist", "-s", action="store_true", help="Build source distribution (.tar.gz)")
-    parser.add_argument("--debug", "-d", action="store_true", help="Build in debug mode (default is release)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--release", action="store_true", help="Use release mode (default)")
+    mode.add_argument("--debug", "-d", action="store_true", help="Build in debug mode (default is release)")
     parser.add_argument("--target", help="Specify compilation target architecture")
     args = parser.parse_args()
 
@@ -95,56 +114,43 @@ def main():
 
     DIST_DIR.mkdir(parents=True, exist_ok=True)
 
-    build_cmd = [
-        sys.executable,
-        "-m",
-        "maturin",
-        "build",
-        "-o",
-        str(DIST_DIR),
-        # this interpreter: abi3 wheel normally, a cp314t wheel on free-threaded CPython
-        "-i",
-        sys.executable,
-    ]
+    with TemporaryDirectory(dir=DIST_DIR) as temp:
+        output_dir = Path(temp)
+        build_cmd = [
+            sys.executable,
+            "-m",
+            "maturin",
+            "build",
+            "-o",
+            str(output_dir),
+            # this interpreter: abi3 wheel normally, a cp314t wheel on free-threaded CPython
+            "-i",
+            sys.executable,
+        ]
 
-    if not args.debug:
-        build_cmd.append("--release")
+        if not args.debug:
+            build_cmd.append("--release")
 
-    if args.sdist:
-        build_cmd.append("--sdist")
+        if args.sdist:
+            build_cmd.append("--sdist")
 
-    if args.target:
-        build_cmd.extend(["--target", args.target])
+        if args.target:
+            build_cmd.extend(["--target", args.target])
 
-    print("\n\033[32m[1/3] Building Geatpy Wheel...\033[0m")
-    run_cmd(build_cmd)
+        print("\n\033[32m[1/3] Building Geatpy Wheel...\033[0m")
+        run_cmd(build_cmd)
 
-    # Find latest wheel
-    wheels = sorted(DIST_DIR.glob("geatpy*.whl"), key=os.path.getmtime, reverse=True)
-    if not wheels:
-        print("\033[31m[ERROR] No wheel found in dist directory\033[0m")
-        sys.exit(1)
-
-    latest_wheel = wheels[0]
-    print(f"\n\033[32m[2/3] Build succeeded! Wheel:\033[0m {latest_wheel.name} ({latest_wheel.stat().st_size / 1024:.1f} KB)")
-
-    # Install
-    if args.install or args.test:
-        print(f"\n\033[32m[3/3] Installing wheel to current environment...\033[0m")
-        in_venv = sys.prefix != sys.base_prefix
-        uv_bin = shutil.which("uv")
-        installed = False
-        if uv_bin:
-            res = run_cmd([uv_bin, "pip", "install", "--reinstall", "--no-deps", "--break-system-packages", str(latest_wheel), "--python", sys.executable], check=False)
-            if res == 0:
-                installed = True
-        if not installed:
-            pip_cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", "--break-system-packages", str(latest_wheel)]
-            if not in_venv:
-                pip_cmd.append("--user")
-            run_cmd(pip_cmd)
-        repair_macos_linkedit()
-        print("\033[32m[DONE] Installation completed successfully!\033[0m")
+        wheels = list(output_dir.glob("*.whl"))
+        if len(wheels) != 1:
+            sys.exit(f"Expected one wheel from this build, found {len(wheels)}")
+        wheel = wheels[0]
+        print(f"[2/3] Built {wheel.name} ({wheel.stat().st_size / 1024:.1f} KB)")
+        try:
+            if args.install or args.test:
+                install_wheel(wheel)
+        finally:
+            for artifact in output_dir.iterdir():
+                artifact.replace(DIST_DIR / artifact.name)
 
     # Test
     if args.test:
