@@ -686,8 +686,11 @@ def test_crtfld_explicit_precision_and_code_lengths():
             ea.crtfld('BG', vt, field, borders, [4, 4], codes, scales)
 
 
-@pytest.mark.parametrize('args, name', [((1, 0), 'NUM'), ((3, None, 0), 'Div'),
-                                        ((1, None, 0), 'Div'), ((3, 0, 0), 'Div')])
+@pytest.mark.parametrize('args, name', [
+    ((1, 0), 'NUM'), ((3, -1), 'NUM'), ((3, 4.5), 'NUM'), ((3, False), 'NUM'),
+    ((3, None, 0), 'Div'), ((1, None, 0), 'Div'), ((3, 0, 0), 'Div'),
+    ((3, None, -2), 'Div'), ((3, None, 1.5), 'Div'), ((3, None, False), 'Div'),
+])
 def test_crtup_requires_positive_counts(args, name):
     with pytest.raises(RuntimeError, match=f'{name} must be an int number'):
         ea.crtup(*args)

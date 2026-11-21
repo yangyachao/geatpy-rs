@@ -827,27 +827,34 @@ fn simplex_lattice(m: usize, h: usize) -> Vec<Vec<f64>> {
 pub fn crtup<'py>(
     py: Python<'py>,
     dim: usize,
-    num: Option<usize>,
-    div: Option<usize>,
+    num: Option<&Bound<'py, PyAny>>,
+    div: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<(Bound<'py, PyArray2<f64>>, usize)> {
-    let invalid_count = |name: &str| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!(
-        "error in crtup: {name} must be an int number which is bigger than 0 when it it not None. (当参数{name}非None时，它必须是一个大于0的int型整数。)"
-    ))
+    let count_arg = |arg: Option<&Bound<'py, PyAny>>, name: &str| -> PyResult<Option<usize>> {
+        let Some(o) = arg.filter(|o| !o.is_none()) else {
+            return Ok(None);
+        };
+        let msg = format!(
+            "error in crtup: {name} must be an int number which is bigger than 0 when it it not None. (当参数{name}非None时，它必须是一个大于0的int型整数。)"
+        );
+        positive_int(o, &msg).map(Some)
     };
-    if div == Some(0) {
-        return Err(invalid_count("Div"));
-    }
-    match (num, div) {
-        (Some(_), Some(_)) => return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "error in crtup: NUM must be None when Div is not None. (当参数Div非None时，参数NUM必须为空。)"
-        )),
-        (None, None) => return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "error in crtup: One of the NUM and Div must not be None. (当参数NUM和参数Div必须不能同时为空。)"
-        )),
-        (Some(0), None) => return Err(invalid_count("NUM")),
+    let div = count_arg(div, "Div")?;
+    let has_num = num.is_some_and(|o| !o.is_none());
+    match (has_num, div) {
+        (true, Some(_)) => {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "error in crtup: NUM must be None when Div is not None. (当参数Div非None时，参数NUM必须为空。)",
+            ))
+        }
+        (false, None) => {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "error in crtup: One of the NUM and Div must not be None. (当参数NUM和参数Div必须不能同时为空。)",
+            ))
+        }
         _ => {}
     }
+    let num = count_arg(num, "NUM")?;
     if dim == 0 {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
             "error in crtup: Dim must be positive.",
