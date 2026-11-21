@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 import os
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from stat import S_IMODE
+from tempfile import TemporaryDirectory
+import warnings
 
 import numpy as np
 
@@ -237,10 +238,19 @@ class Problem:
         if (not reCalculate
                 and self.calReferObjV.__module__ != 'geatpy.Problem'
                 and cache_path.exists()):
-            cached = np.loadtxt(cache_path, delimiter=',', ndmin=2)
-            if cached.shape[1] == self.M:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', UserWarning)
+                    cached = np.loadtxt(cache_path, delimiter=',', ndmin=2)
+            except (OSError, ValueError):
+                cached = None
+            if (cached is not None
+                    and cached.ndim == 2
+                    and cached.shape[0] > 0
+                    and cached.shape[1] == self.M):
+                self.ReferObjV = cached
                 return cached
-        # 缓存缺失或列数不符时重新计算目标函数参考值
+        # 缓存缺失、损坏或列数不符时重新计算目标函数参考值
         referenceObjV = self.calReferObjV()
         if referenceObjV is not None:
             # 简单检查referenceObjV的合法性

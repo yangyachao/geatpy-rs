@@ -153,6 +153,14 @@ def test_reference_cache_preserves_matrix_shape(tmp_path, monkeypatch, values):
     np.testing.assert_array_equal(create_problem().ReferObjV, values)
     np.testing.assert_array_equal(np.loadtxt(cache, delimiter=',', ndmin=2), values)
 
+    for bad_text in ('', 'not,a,number\n'):
+        cache.write_text(bad_text)
+        prob = create_problem()
+        np.testing.assert_array_equal(prob.ReferObjV, values)
+        prob.ReferObjV = None
+        np.testing.assert_array_equal(prob.getReferObjV(reCalculate=False), values)
+        np.testing.assert_array_equal(prob.ReferObjV, values)
+
 
 @pytest.mark.skipif(os.name != 'posix', reason='POSIX file modes')
 def test_reference_cache_preserves_permissions(tmp_path, monkeypatch):
