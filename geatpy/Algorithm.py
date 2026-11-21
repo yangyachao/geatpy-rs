@@ -302,9 +302,10 @@ def _hypervolume(problem, objectives):
     reference = problem.ReferObjV
     directions = problem.maxormins
     if directions is not None:
-        objectives = objectives * directions
+        directions = np.asarray(directions)
+        objectives = np.asarray(objectives) * directions
         if reference is not None:
-            reference = reference * directions
+            reference = np.asarray(reference) * directions
     return ea.indicator.HV(objectives, reference)
 
 
