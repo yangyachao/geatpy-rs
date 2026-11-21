@@ -8,10 +8,10 @@
 
 | 脚本文件 | 适用场景 | 常用命令 |
 | :--- | :--- | :--- |
-| [`scripts/build.sh`](file:///home/kaiquan/kaiquan/geatpy/scripts/build.sh) | Linux / macOS 本地一键打包与安装 | `./scripts/build.sh --test` |
-| [`scripts/build.py`](file:///home/kaiquan/kaiquan/geatpy/scripts/build.py) | Windows / macOS / Linux 跨平台构建 | `python scripts/build.py --test` |
-| [`scripts/build_wheels.sh`](file:///home/kaiquan/kaiquan/geatpy/scripts/build_wheels.sh) | 生产级发布包 (Wheel + sdist) 导出 | `./scripts/build_wheels.sh` |
-| [`.github/workflows/release.yml`](file:///home/kaiquan/kaiquan/geatpy/.github/workflows/release.yml) | GitHub Actions 多平台自动化发布流水线 | 推送标签 `v*` 自动触发 |
+| [`scripts/build.sh`](scripts/build.sh) | Linux / macOS 本地一键打包与安装 | `./scripts/build.sh --test` |
+| [`scripts/build.py`](scripts/build.py) | Windows / macOS / Linux 跨平台构建 | `python scripts/build.py --test` |
+| [`scripts/build_wheels.sh`](scripts/build_wheels.sh) | 生产级发布包 (Wheel + sdist) 导出 | `./scripts/build_wheels.sh` |
+| [`.github/workflows/release.yml`](.github/workflows/release.yml) | GitHub Actions 多平台自动化发布流水线 | 推送标签 `v*` 自动触发 |
 
 ---
 

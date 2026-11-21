@@ -93,11 +93,21 @@ if ! command -v maturin &> /dev/null; then
     MATURIN_CMD="${PYTHON_BIN} -m maturin"
 fi
 
-# 3. 准备输出目录
+# 3. 准备输出目录与本次构建临时目录
 mkdir -p "${DIST_DIR}"
+TMP_DIST="$(mktemp -d "${DIST_DIR}/build.XXXXXX")"
+cleanup_tmp_dist() {
+    if [ -d "${TMP_DIST}" ]; then
+        for f in "${TMP_DIST}"/*; do
+            [ -e "$f" ] && mv -f "$f" "${DIST_DIR}/"
+        done
+        rmdir "${TMP_DIST}" 2>/dev/null || rm -rf "${TMP_DIST}"
+    fi
+}
+trap cleanup_tmp_dist EXIT
 
 # 4. 执行打包构建
-BUILD_OPTS=("-o" "${DIST_DIR}")
+BUILD_OPTS=("-o" "${TMP_DIST}" "-i" "${PYTHON_BIN}")
 if [ "${RELEASE_FLAG}" = true ]; then
     BUILD_OPTS+=("--release")
 fi
@@ -108,17 +118,40 @@ fi
 echo -e "${GREEN}[3/5] 开始构建 Geatpy (包含 Rust 原生核心)...${NC}"
 ${MATURIN_CMD} build "${BUILD_OPTS[@]}"
 
-LATEST_WHEEL=$(ls -t "${DIST_DIR}"/geatpy*.whl 2>/dev/null | head -n 1)
+BUILT_WHEELS=("${TMP_DIST}"/*.whl)
+if [ ${#BUILT_WHEELS[@]} -ne 1 ] || [ ! -f "${BUILT_WHEELS[0]}" ]; then
+    echo -e "${RED}[错误] 本次构建未生成唯一的 Wheel 文件${NC}"
+    exit 1
+fi
+WHEEL_NAME="$(basename "${BUILT_WHEELS[0]}")"
+cleanup_tmp_dist
+trap - EXIT
+LATEST_WHEEL="${DIST_DIR}/${WHEEL_NAME}"
 echo -e "${GREEN}[4/5] 构建成功! 生成 Wheel 文件:${NC}"
 ls -lh "${LATEST_WHEEL}"
 
 # 5. 可选安装与测试
 if [ "${INSTALL_FLAG}" = true ]; then
-    echo -e "${BLUE}--> 正在安装最新构建的 Wheel 至当前 Python 环境...${NC}"
+    echo -e "${BLUE}--> 正在安装本次构建的 Wheel 至当前 Python 环境...${NC}"
+    INSTALLED=false
     if command -v uv &> /dev/null; then
-        uv pip install --reinstall "${LATEST_WHEEL}" --python "${PYTHON_BIN}"
-    else
-        "${PYTHON_BIN}" -m pip install --force-reinstall --no-deps "${LATEST_WHEEL}"
+        if uv pip install --reinstall --no-deps --break-system-packages "${LATEST_WHEEL}" --python "${PYTHON_BIN}"; then
+            INSTALLED=true
+        fi
+    fi
+    if [ "${INSTALLED}" = false ]; then
+        "${PYTHON_BIN}" -m pip install --force-reinstall --no-deps --break-system-packages "${LATEST_WHEEL}"
+    fi
+    if [ "$(uname -s)" = "Darwin" ]; then
+        if ! "${PYTHON_BIN}" -c "import _geatpy_core" 2>/tmp/geatpy_linkedit_probe.$$; then
+            if grep -q "mis-aligned LINKEDIT" /tmp/geatpy_linkedit_probe.$$ 2>/dev/null; then
+                SO_DIR="$("${PYTHON_BIN}" -c "import importlib.util as u, os; print(os.path.dirname(u.find_spec('_geatpy_core').origin))")"
+                for so in "${SO_DIR}"/_geatpy_core*.so; do
+                    [ -f "$so" ] && "${PYTHON_BIN}" "${REPO_ROOT}/scripts/macos_fix_linkedit.py" "$so"
+                done
+            fi
+        fi
+        rm -f /tmp/geatpy_linkedit_probe.$$
     fi
     echo -e "${GREEN}--> 安装完成!${NC}"
 fi
